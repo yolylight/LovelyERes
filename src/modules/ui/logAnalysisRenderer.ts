@@ -52,7 +52,7 @@ export class LogAnalysisRenderer {
   /**
    * 渲染工具栏
    */
-  private renderToolbar(): string {
+  public renderToolbar(): string {
     const today = new Date().toISOString().split('T')[0];
     
     return `

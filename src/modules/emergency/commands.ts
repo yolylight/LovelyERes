@@ -41,8 +41,14 @@ export const emergencyCategories: EmergencyCategory[] = [
       { id: 'perm-ww-dirs', name: 'World-writable 目录', cmd: `find / -xdev -type d -perm -0002 -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null | sort | head -n 200`, desc: '可能被任意用户写入' },
       { id: 'perm-ww-files', name: 'World-writable 文件', cmd: `find / -xdev -type f -perm -0002 -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null | sort | head -n 200`, desc: '可能被任意用户写入' },
       { id: 'perm-cap', name: 'Capabilities 概览', cmd: `command -v getcap >/dev/null 2>&1 && getcap -r / 2>/dev/null | head -n 300 || echo 'getcap 未安装'`, desc: 'Linux capabilities 检查' },
-      { id: 'perm-unowned', name: 'No Owner/Nogroup 文件', cmd: `find / -xdev \( -nouser -o -nogroup \) 2>/dev/null | head -n 200`, desc: '潜在遗留或异常文件' },
+      { id: 'perm-unowned', name: 'No Owner/Nogroup 文件', cmd: `find / -xdev \\( -nouser -o -nogroup \\) 2>/dev/null | head -n 200`, desc: '潜在遗留或异常文件' },
       { id: 'perm-sudoers', name: 'sudoers 配置', cmd: `echo '[group sudo]'; getent group sudo; echo '\n[sudoers]'; grep -vE '^(#|$)' /etc/sudoers 2>/dev/null; ls -l /etc/sudoers.d 2>/dev/null`, desc: 'sudoers 基本核查' },
+      {
+        id: 'perm-ssh-login-users',
+        name: '可登录 SSH 账号',
+        cmd: `cat /etc/shadow 2>/dev/null | grep '^[^:]*:[^\\*!]' | cut -d: -f1 | while read i; do grep "^$i:" /etc/passwd 2>/dev/null | grep -vE "/bin/false|/nologin"; done | cut -d: -f1 | sort | uniq`,
+        desc: 'Shadow密码有效且Shell可登录'
+      },
     ],
   },
   {
@@ -95,8 +101,8 @@ export const emergencyCategories: EmergencyCategory[] = [
           alpine: 'rc-status 2>/dev/null | grep started || ps aux | head -n 100'
         }
       },
-      { id: 'base-cron', name: 'cron 任务总览', cmd: 'for u in $(cut -f1 -d: /etc/passwd); do echo "===== $u ====="; crontab -u "$u" -l 2>/dev/null; done; echo "===== system ====="; ls -l /etc/cron.* /etc/cron.d 2>/dev/null', desc: '用户/系统定时任务' },
-      { id: 'base-packages', name: '核心组件版本', cmd: `(uname -a; echo; bash --version 2>/dev/null | head -n1; echo; openssl version 2>/dev/null; echo; ssh -V 2>&1 | head -n1) 2>/dev/null`, desc: '内核/常见组件' },
+      { id: 'base-cron', name: 'cron 任务总览', cmd: 'cut -f1 -d: /etc/passwd | while read u; do echo "===== $u ====="; crontab -u "$u" -l 2>/dev/null; done; echo "===== system ====="; ls -l /etc/cron.* /etc/cron.d 2>/dev/null', desc: '用户/系统定时任务' },
+      { id: 'base-packages', name: '核心组件版本', cmd: `uname -a; echo; bash --version 2>/dev/null | head -n1; echo; openssl version 2>/dev/null; echo; ssh -V 2>&1 | head -n1`, desc: '内核/常见组件' },
       {
         id: 'base-selinux-status',
         name: 'SELinux/AppArmor 状态',
@@ -122,7 +128,7 @@ export const emergencyCategories: EmergencyCategory[] = [
         id: 'base-password-aging',
         name: '密码过期策略检查',
         desc: '检查用户密码过期设置',
-        cmd: 'for user in $(cut -d: -f1 /etc/passwd); do chage -l "$user" 2>/dev/null | grep -E "Password expires|Maximum|Minimum|Warning" | head -n 4 && echo "---"; done | head -n 200'
+        cmd: 'cut -d: -f1 /etc/passwd | while read user; do chage -l "$user" 2>/dev/null | grep -E "Password expires|Maximum|Minimum|Warning" | head -n 4 && echo "---"; done | head -n 200'
       },
       {
         id: 'base-empty-password',
@@ -146,7 +152,7 @@ export const emergencyCategories: EmergencyCategory[] = [
         id: 'base-ssh-keys',
         name: 'SSH 密钥检查',
         desc: '检查所有用户的SSH授权密钥',
-        cmd: 'for home in /root /home/*; do [ -f "$home/.ssh/authorized_keys" ] && echo "=== $home ===" && cat "$home/.ssh/authorized_keys" 2>/dev/null; done'
+        cmd: 'ls -d /root /home/* 2>/dev/null | while read home; do [ -f "$home/.ssh/authorized_keys" ] && echo "=== $home ===" && cat "$home/.ssh/authorized_keys" 2>/dev/null; done'
       },
       {
         id: 'base-failed-logins',
@@ -293,8 +299,8 @@ export const emergencyCategories: EmergencyCategory[] = [
       { id: 'sys-root-proc', name: 'Root 进程', cmd: `ps -U root -u root u 2>/dev/null | sed -n '1,200p'`, desc: '以root运行的进程' },
       { id: 'sys-recent-files', name: '24h Modified 文件', cmd: `find / -xdev -type f -mtime -1 2>/dev/null | head -n 200`, desc: '最近修改排查' },
       { id: 'sys-modules', name: '内核模块 lsmod', cmd: `lsmod 2>/dev/null | sed -n '1,200p'`, desc: '已加载模块' },
-      { id: 'sys-logins', name: '登录历史 last/lastlog', cmd: `(last -n 80 2>/dev/null || lastlog 2>/dev/null | tail -n 120)`, desc: 'last/lastlog 摘要' },
-      { id: 'sys-path', name: 'PATH 可写检测', cmd: `echo $PATH; echo; for d in $(echo $PATH | tr ':' ' '); do ls -ld "$d" 2>/dev/null; done`, desc: '可写PATH风险' },
+      { id: 'sys-logins', name: '登录历史 last/lastlog', cmd: `last -n 80 2>/dev/null || lastlog 2>/dev/null | tail -n 120`, desc: 'last/lastlog 摘要' },
+      { id: 'sys-path', name: 'PATH 可写检测', cmd: `echo $PATH; echo; echo $PATH | tr ':' '\n' | while read d; do ls -ld "$d" 2>/dev/null; done`, desc: '可写PATH风险' },
       {
         id: 'sys-hidden-processes',
         name: '隐藏进程检测',
@@ -477,7 +483,7 @@ export const emergencyCategories: EmergencyCategory[] = [
         id: 'audit-user-commands',
         name: '用户命令历史',
         desc: '查看用户bash历史',
-        cmd: 'for home in /root /home/*; do [ -f "$home/.bash_history" ] && echo "=== $home ===" && tail -n 30 "$home/.bash_history" 2>/dev/null; done | head -n 500'
+        cmd: 'ls -d /root /home/* 2>/dev/null | while read home; do [ -f "$home/.bash_history" ] && echo "=== $home ===" && tail -n 30 "$home/.bash_history" 2>/dev/null; done | head -n 500'
       },
       {
         id: 'audit-file-integrity',
@@ -534,7 +540,7 @@ export const emergencyCategories: EmergencyCategory[] = [
     title: '取证采集',
     hint: 'CTF / 比赛常见取证 Artefacts',
     items: [
-      { id: 'fx-bash-history', name: '普通用户 bash_history', cmd: `for u in $(getent passwd | awk -F: '$3>=1000 && $3!=65534 {print $1}'); do hist=~$u/.bash_history; [ -f "$hist" ] && { echo "===== $u ====="; tail -n 40 "$hist"; echo; }; done`, desc: '抽取普通账号最近的命令历史' },
+      { id: 'fx-bash-history', name: '普通用户 bash_history', cmd: `getent passwd | awk -F: '$3>=1000 && $3!=65534 {print $1}' | while read u; do hist=~$u/.bash_history; [ -f "$hist" ] && { echo "===== $u ====="; tail -n 40 "$hist"; echo; }; done`, desc: '抽取普通账号最近的命令历史' },
       { id: 'fx-root-history', name: 'root bash_history', cmd: `tail -n 80 /root/.bash_history 2>/dev/null`, desc: '快速查看管理员历史命令' },
       { id: 'fx-auth-journal', name: 'SSH 成功/失败登录', cmd: `journalctl -u ssh -n 120 --no-pager 2>/dev/null || tail -n 120 /var/log/auth.log 2>/dev/null`, desc: '整合 SSH 登录事件' },
       { id: 'fx-tmp-recent', name: '/tmp Recent 文件', cmd: `find /tmp /var/tmp -maxdepth 2 -type f -mtime -1 -size -5M -printf '%TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null`, desc: '挂载木马常驻的临时文件' },

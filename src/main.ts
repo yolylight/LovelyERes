@@ -10,6 +10,7 @@ import './styles/log-analysis.css';
 
 import './styles/session-tabs.css';
 import './styles/docker.css';
+import './styles/database.css';
 
 import { invoke } from "@tauri-apps/api/core";
 import { LovelyResApp } from './modules/core/app';
@@ -17,6 +18,7 @@ import { remoteOperationsManager } from './modules/remote/remoteOperationsManage
 
 import { dockerPageManager } from './modules/docker/dockerPageManager';
 import { emergencyPageManager } from './modules/emergency/emergencyPageManager';
+
 import { sshConnectionManager } from './modules/remote/sshConnectionManager';
 import { quickDetectionManager } from './modules/detection/quickDetectionManager';
 import { ProcessContextMenu } from './modules/ui/processContextMenu';
@@ -946,6 +948,32 @@ async function initializeApp() {
     }
   });
   console.log('✅ SSH终端按钮事件监听器已添加（事件委托方式）');
+
+  // 全局点击事件代理 - 处理保存按钮
+  document.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    // 使用 closest 查找按钮，防止点击图标不触发
+    const saveBtn = target.closest('#save-server-btn');
+    
+    if (saveBtn) {
+        console.log('🚀 [Global Delegate] 捕获到保存按钮点击事件');
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        
+        const form = document.querySelector('#add-server-form-element') as HTMLFormElement;
+        if (form) {
+            // 手动触发验证
+            if (!form.checkValidity()) {
+                form.reportValidity();
+                return;
+            }
+            // 构造 FormData 并提交
+            const formData = new FormData(form);
+            (window as any).saveServer(formData);
+        }
+    }
+  });
+
 
   // 数据库管理相关全局函数
   (window as any).switchDatabaseView = (viewType: string) => {
@@ -1911,6 +1939,17 @@ function setupGlobalModalFunctions(app: LovelyResApp) {
   (window as any).saveServer = async (formData: FormData) => {
     try {
       console.log('🚀 [saveServer] 开始保存服务器配置...');
+      
+      // 获取提交按钮并显示加载状态
+      const submitBtn = document.querySelector('#add-server-form button[type="submit"]') as HTMLButtonElement;
+      let originalBtnText = '保存服务器';
+      if (submitBtn) {
+        originalBtnText = submitBtn.textContent || '保存服务器';
+        submitBtn.textContent = '保存中...';
+        submitBtn.disabled = true;
+      }
+
+      try {
       const isEditing = !!(window as any).editingServerId;
       const editingServerId = (window as any).editingServerId;
 
@@ -2041,6 +2080,13 @@ function setupGlobalModalFunctions(app: LovelyResApp) {
       } else {
         throw new Error('SSH管理器未初始化');
       }
+      } finally {
+        // 恢复按钮状态
+        if (submitBtn) {
+            submitBtn.textContent = originalBtnText;
+            submitBtn.disabled = false;
+        }
+      }
     } catch (error) {
       console.error('❌ 保存服务器配置失败:', error);
 
@@ -2054,6 +2100,37 @@ function setupGlobalModalFunctions(app: LovelyResApp) {
 
       (window as any).showNotification?.(`保存服务器配置失败：${errorMessage}`, 'error');
     }
+  };
+
+  // 筛选服务器列表
+  (window as any).filterServerList = (searchTerm: string) => {
+    const serverList = document.getElementById('server-list');
+    if (!serverList) return;
+
+    const serverCards = serverList.querySelectorAll('.server-card');
+    const lowerSearchTerm = searchTerm.toLowerCase().trim();
+
+    serverCards.forEach((card: Element) => {
+      const cardElement = card as HTMLElement;
+      
+      // 获取服务器卡片中的文本内容（服务器名称、主机地址、用户名）
+      const cardText = cardElement.textContent?.toLowerCase() || '';
+      
+      // 如果搜索词为空，显示所有卡片
+      if (!lowerSearchTerm) {
+        cardElement.style.display = '';
+        return;
+      }
+      
+      // 根据是否匹配显示或隐藏卡片
+      if (cardText.includes(lowerSearchTerm)) {
+        cardElement.style.display = '';
+      } else {
+        cardElement.style.display = 'none';
+      }
+    });
+
+    console.log(`🔍 服务器列表筛选: "${searchTerm}"`);
   };
 
   // 刷新服务器列表
@@ -2080,12 +2157,8 @@ function setupGlobalModalFunctions(app: LovelyResApp) {
         // 重新绑定表单提交事件，防止内联 onsubmit 失效
         const newForm = document.getElementById('add-server-form-element');
         if (newForm) {
-            newForm.onsubmit = (event) => {
-                console.log('🚀 [事件绑定] 表单提交被触发');
-                event.preventDefault();
-                (window as any).handleServerFormSubmit(event);
-            };
-            console.log('✅ 已重新绑定服务器表单 submit 事件');
+            // 不再需要绑定 onsubmit，因为改为手动处理点击事件
+            console.log('✅ 服务器表单已刷新（使用手动点击处理）');
         }
       }
     } catch (error) {

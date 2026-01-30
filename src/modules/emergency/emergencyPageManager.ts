@@ -82,12 +82,27 @@ class EmergencyPageManager {
 
     if (this.initialized) {
       console.log('⏭️ EmergencyPageManager 已初始化，跳过');
+      
+      // 检查连接状态，如果未连接则不执行后续操作
+      const app = (window as any).app;
+      if (app && app.stateManager && !app.stateManager.getState().isConnected) {
+        console.log('⚠️ 未连接服务器，跳过数据刷新');
+        return;
+      }
+
       // 即使已初始化，也重新加载账号列表（可能已更新）
       await this.loadAccountList();
       // 重新显示系统信息（解决切换页面后显示"检测中..."的问题）
       if (this.systemInfo) {
         this.displaySystemInfo();
       }
+      return;
+    }
+
+    // 检查连接状态
+    const app = (window as any).app;
+    if (app && app.stateManager && !app.stateManager.getState().isConnected) {
+      console.log('⚠️ 未连接服务器，跳过 EmergencyPageManager 初始化');
       return;
     }
 

@@ -1,0 +1,1089 @@
+/* 数据库管理样式 */
+/* Database Management Styles */
+
+.db-page {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--bg-primary, #1a1a1a);
+    color: var(--text-primary, #e0e0e0);
+}
+
+.db-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border-color, #333);
+    background: var(--bg-secondary, #222);
+}
+
+.db-header h2 {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.db-header-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.db-content {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+.db-sidebar {
+    width: 320px;
+    border-right: 1px solid var(--border-color, #333);
+    background: var(--bg-secondary, #222);
+    overflow-y: auto;
+}
+
+.db-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.db-section {
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color, #333);
+}
+
+.db-section h3 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary, #999);
+}
+
+/* 环境信息 */
+.db-environment-info {
+    font-size: 0.9rem;
+}
+
+.db-env-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.db-env-item {
+    display: flex;
+    justify-content: space-between;
+}
+
+.db-env-label {
+    color: var(--text-secondary, #999);
+}
+
+.db-env-value {
+    font-weight: 600;
+    color: var(--accent-color, #4a9eff);
+}
+
+.db-client-list,
+.db-docker-list {
+    margin-top: 1rem;
+}
+
+.db-client-list h4,
+.db-docker-list h4 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.85rem;
+    color: var(--text-secondary, #999);
+}
+
+.db-client-card,
+.db-docker-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    border-radius: 6px;
+    background: var(--bg-tertiary, #2a2a2a);
+    border: 1px solid var(--border-color, #333);
+}
+
+.db-client-card.db-client-available {
+    border-color: var(--success-color, #4caf50);
+    background: rgba(76, 175, 80, 0.1);
+}
+
+.db-client-card.db-client-unavailable {
+    opacity: 0.5;
+}
+
+.db-client-icon,
+.db-docker-icon {
+    font-size: 1.5rem;
+}
+
+.db-client-info,
+.db-docker-info {
+    flex: 1;
+    min-width: 0; /* Important for text overflow */
+}
+
+.db-client-name,
+.db-docker-name {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.db-client-version {
+    font-size: 0.8rem;
+    color: var(--text-secondary, #999);
+}
+
+.db-docker-meta {
+    display: flex;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #999);
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.db-docker-image {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1; /* Allow image name to shrink */
+}
+
+.db-docker-ports {
+    flex-shrink: 0; /* Keep ports visible */
+    white-space: nowrap;
+}
+
+.db-docker-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    margin-left: 0.5rem;
+    min-width: 0; /* Prevents flex item from overflowing container */
+    flex-shrink: 0;
+    max-width: 40%;
+}
+
+.db-docker-status-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    max-width: 100%;
+}
+
+.db-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--text-secondary, #999);
+    flex-shrink: 0;
+}
+
+.db-status-dot.up {
+    background-color: var(--success-color, #4caf50);
+    box-shadow: 0 0 4px rgba(76, 175, 80, 0.4);
+}
+
+.db-status-dot.down {
+    background-color: var(--error-color, #f44336);
+}
+
+.db-docker-status {
+    font-size: 0.8rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary, #999);
+}
+
+.db-docker-action-hint,
+.db-client-action-hint {
+    font-size: 0.75rem;
+    color: var(--accent-color, #4a9eff);
+    margin-top: 0.25rem;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.db-docker-card:hover .db-docker-action-hint,
+.db-client-card:hover .db-client-action-hint {
+    opacity: 1;
+}
+
+/* 连接列表 */
+.db-connection-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.db-connection-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border-radius: 6px;
+    background: var(--bg-tertiary, #2a2a2a);
+    border: 1px solid var(--border-color, #333);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.db-connection-item:hover {
+    background: var(--bg-hover, #333);
+    border-color: var(--accent-color, #4a9eff);
+}
+
+.db-connection-item.active {
+    border-color: var(--accent-color, #4a9eff);
+    background: rgba(74, 158, 255, 0.1);
+}
+
+.db-connection-icon {
+    font-size: 1.5rem;
+}
+
+.db-connection-info {
+    flex: 1;
+}
+
+.db-connection-name {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.db-connection-meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary, #999);
+}
+
+.db-connection-actions {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.db-btn-icon {
+    background: transparent;
+    border: none;
+    padding: 0.25rem;
+    cursor: pointer;
+    font-size: 1rem;
+    opacity: 0.7;
+    transition: opacity 0.2s;
+}
+
+.db-btn-icon:hover {
+    opacity: 1;
+}
+
+/* 查询面板 */
+.db-query-panel {
+    border-bottom: 1px solid var(--border-color, #333);
+    background: var(--bg-secondary, #222);
+}
+
+.db-query-header,
+.db-result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-color, #333);
+}
+
+.db-query-header h3,
+.db-result-header h3 {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.db-query-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.db-query-editor {
+    width: 100%;
+    height: 200px;
+    padding: 1rem;
+    border: none;
+    background: var(--bg-primary, #1a1a1a);
+    color: var(--text-primary, #e0e0e0);
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9rem;
+    resize: vertical;
+    outline: none;
+}
+
+.db-query-editor::placeholder {
+    color: var(--text-tertiary, #666);
+}
+
+/* 结果面板 */
+.db-result-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.db-query-result {
+    flex: 1;
+    padding: 1rem;
+    overflow: auto;
+}
+
+.db-result-table-wrapper {
+    overflow: auto;
+}
+
+.db-result-table {
+    min-width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.db-result-table th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-secondary, #222);
+    padding: 0.75rem;
+    text-align: left;
+    font-weight: 600;
+    border-bottom: 2px solid var(--accent-color, #4a9eff);
+    white-space: nowrap;
+}
+
+.db-result-table td {
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--border-color, #333);
+    white-space: nowrap;
+}
+
+.db-result-table tr:hover {
+    background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+}
+
+.db-result-info {
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary, #999);
+    border-top: 1px solid var(--border-color, #333);
+    background: var(--bg-secondary, #222);
+}
+
+/* 按钮 */
+.db-btn {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.db-btn .icon {
+    font-size: 1rem;
+}
+
+.db-btn-primary {
+    background: var(--accent-color, #4a9eff);
+    color: white;
+}
+
+.db-btn-primary:hover {
+    background: var(--accent-hover, #3a8eef);
+}
+
+.db-btn-secondary {
+    background: var(--bg-tertiary, #333);
+    color: var(--text-primary, #e0e0e0);
+}
+
+.db-btn-secondary:hover {
+    background: var(--bg-hover, #444);
+}
+
+.db-btn-success {
+    background: var(--success-color, #4caf50);
+    color: white;
+}
+
+.db-btn-success:hover {
+    background: var(--success-hover, #45a049);
+}
+
+.db-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 模态框 */
+.db-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.db-modal-content {
+    background: var(--bg-secondary, #222);
+    border-radius: 8px;
+    width: 90%;
+    max-width: 600px;
+    max-height: 90vh;
+    overflow: auto;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.db-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border-color, #333);
+}
+
+.db-modal-header h3 {
+    margin: 0;
+    font-size: 1.2rem;
+}
+
+.db-modal-close {
+    background: transparent;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: var(--text-secondary, #999);
+}
+
+.db-modal-close:hover {
+    color: var(--text-primary, #e0e0e0);
+}
+
+.db-modal-body {
+    padding: 1.5rem;
+}
+
+/* 表单 */
+.db-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.db-form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+
+.db-form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.db-form-group label {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-secondary, #999);
+}
+
+.db-form-group input,
+.db-form-group select {
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border-color, #333);
+    border-radius: 4px;
+    background: var(--bg-primary, #1a1a1a);
+    color: var(--text-primary, #e0e0e0);
+    font-size: 0.9rem;
+}
+
+.db-form-group input:focus,
+.db-form-group select:focus {
+    outline: none;
+    border-color: var(--accent-color, #4a9eff);
+}
+
+.db-form-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+}
+
+/* 占位符 */
+.db-placeholder {
+    color: var(--text-tertiary, #666);
+    text-align: center;
+    padding: 2rem;
+    font-style: italic;
+}
+
+.db-error {
+    color: var(--error-color, #f44336);
+    padding: 1rem;
+    background: rgba(244, 67, 54, 0.1);
+    border-radius: 4px;
+    border-left: 3px solid var(--error-color, #f44336);
+}
+
+.db-empty {
+    color: var(--text-secondary, #999);
+    padding: 2rem;
+    text-align: center;
+}
+
+/* Toast 消息 */
+.db-toast {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    padding: 1rem 1.5rem;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all 0.3s;
+    z-index: 2000;
+}
+
+.db-toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.db-toast-success {
+    background: var(--success-color, #4caf50);
+    color: white;
+}
+
+.db-toast-error {
+    background: var(--error-color, #f44336);
+    color: white;
+}
+
+/* 滚动条 */
+.db-sidebar::-webkit-scrollbar,
+.db-query-result::-webkit-scrollbar,
+.db-result-table-wrapper::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.db-sidebar::-webkit-scrollbar-track,
+.db-query-result::-webkit-scrollbar-track,
+.db-result-table-wrapper::-webkit-scrollbar-track {
+    background: var(--bg-primary, #1a1a1a);
+}
+
+.db-sidebar::-webkit-scrollbar-thumb,
+.db-query-result::-webkit-scrollbar-thumb,
+.db-result-table-wrapper::-webkit-scrollbar-thumb {
+    background: var(--border-color, #333);
+    border-radius: 4px;
+}
+
+.db-sidebar::-webkit-scrollbar-thumb:hover,
+.db-query-result::-webkit-scrollbar-thumb:hover,
+
+/* 分隔线 */
+.db-divider-vertical {
+    width: 1px;
+    height: 24px;
+    background: var(--border-color, #333);
+    margin: 0 0.5rem;
+}
+
+/* 警告按钮 */
+.db-btn-warning {
+    background: var(--warning-color, #ff9800);
+    color: white;
+}
+
+.db-btn-warning:hover {
+    background: var(--warning-hover, #f57c00);
+}
+
+/* 安全审计报告 */
+.db-security-report {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.db-security-summary-card {
+    background: var(--bg-tertiary, #2a2a2a);
+    border-radius: 8px;
+    padding: 1.5rem;
+    border: 1px solid var(--border-color, #333);
+}
+
+.db-security-summary-card h4 {
+    margin: 0 0 1rem 0;
+    font-size: 1.1rem;
+    color: var(--text-primary, #e0e0e0);
+}
+
+.db-summary-stats {
+    display: flex;
+    gap: 2rem;
+}
+
+.db-stat-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.db-stat-item .count {
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+.db-stat-item .label {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #999);
+}
+
+.db-stat-item.pass .count { color: var(--success-color, #4caf50); }
+.db-stat-item.fail .count { color: var(--error-color, #f44336); }
+.db-stat-item.warning .count { color: var(--warning-color, #ff9800); }
+
+/* 安全检查列表 */
+.db-security-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.db-security-item {
+    background: var(--bg-tertiary, #2a2a2a);
+    border-radius: 8px;
+    padding: 1.25rem;
+    border: 1px solid var(--border-color, #333);
+    border-left-width: 4px;
+}
+
+.db-security-item.pass { border-left-color: var(--success-color, #4caf50); }
+.db-security-item.fail { border-left-color: var(--error-color, #f44336); }
+.db-security-item.warning { border-left-color: var(--warning-color, #ff9800); }
+.db-security-item.error { border-left-color: var(--error-color, #f44336); }
+
+.db-security-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.db-security-title {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.db-security-icon {
+    font-size: 1.2rem;
+}
+
+.db-security-title .name {
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.db-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+}
+
+.db-badge.critical { background: rgba(244, 67, 54, 0.2); color: #f44336; }
+.db-badge.high { background: rgba(255, 152, 0, 0.2); color: #ff9800; }
+.db-badge.medium { background: rgba(255, 235, 59, 0.2); color: #ffeb3b; }
+.db-badge.low { background: rgba(76, 175, 80, 0.2); color: #4caf50; }
+.db-badge.info { background: rgba(33, 150, 243, 0.2); color: #2196f3; }
+
+.db-security-findings {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+}
+
+.db-security-findings strong {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--text-secondary, #ccc);
+    font-size: 0.9rem;
+}
+
+.db-security-findings ul {
+    margin: 0;
+    padding-left: 1.5rem;
+    color: var(--text-primary, #ddd);
+}
+
+.db-security-findings li {
+    margin-bottom: 0.25rem;
+}
+
+.db-security-findings .item {
+    font-family: monospace;
+    color: var(--accent-color, #4a9eff);
+}
+
+.db-security-recommendation {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 0.9rem;
+    color: var(--text-secondary, #999);
+}
+
+
+/* 数据库对象树 (Sidebar) */
+.db-browser {
+    padding: 0.5rem;
+}
+
+.db-tree-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.db-tree-item {
+    padding: 0.4rem 0.5rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-primary);
+    transition: background 0.2s;
+}
+
+.db-tree-item:hover {
+    background: var(--bg-tertiary, #333);
+}
+
+.db-tree-item.active {
+    background: rgba(74, 158, 255, 0.1);
+    color: var(--accent-color, #4a9eff);
+}
+
+.db-tree-icon {
+    opacity: 0.7;
+    font-size: 1rem;
+}
+
+.db-tree-item.database {
+    font-weight: 600;
+}
+
+.db-tree-item.table {
+    padding-left: 2rem;
+    font-size: 0.85rem;
+}
+
+/* 标签页系统 */
+.db-tabs {
+    display: flex;
+    background: var(--bg-secondary, #222);
+    border-bottom: 1px solid var(--border-color, #333);
+    overflow-x: auto;
+}
+
+.db-tab {
+    padding: 0.75rem 1.5rem;
+    cursor: pointer;
+    border-right: 1px solid var(--border-color, #333);
+    border-bottom: 2px solid transparent;
+    font-size: 0.9rem;
+    color: var(--text-secondary, #999);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 120px;
+    transition: all 0.2s;
+    user-select: none;
+}
+
+.db-tab:hover {
+    background: var(--bg-tertiary, #2a2a2a);
+    color: var(--text-primary, #e0e0e0);
+}
+
+.db-tab.active {
+    background: var(--bg-primary, #1a1a1a);
+    color: var(--accent-color, #4a9eff);
+    border-bottom-color: var(--accent-color, #4a9eff);
+}
+
+.db-tab-close {
+    margin-left: auto;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    opacity: 0.5;
+    font-size: 12px;
+}
+
+.db-tab-close:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.db-tab-content {
+    flex: 1;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-primary, #1a1a1a);
+}
+
+.db-tab-content.active {
+    display: flex;
+}
+
+/* 数据网格工具栏 */
+.db-grid-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--border-color, #333);
+    background: var(--bg-secondary, #222);
+}
+
+.db-pagination {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.db-page-info {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #999);
+    margin: 0 0.5rem;
+}
+
+/* 表结构信息 */
+.db-table-info {
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color, #333);
+    background: var(--bg-tertiary, #2a2a2a);
+}
+
+.db-info-row {
+    display: flex;
+    gap: 2rem;
+    font-size: 0.9rem;
+}
+
+.db-info-item {
+    color: var(--text-secondary, #999);
+}
+
+.db-info-item span {
+    color: var(--text-primary, #e0e0e0);
+    font-weight: 500;
+    margin-left: 0.5rem;
+}
+
+
+/* 可点击卡片样式 */
+.db-clickable {
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.db-clickable:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.db-client-card.db-clickable:hover {
+    border-color: var(--accent-color, #4a9eff);
+    background: rgba(74, 158, 255, 0.15);
+}
+
+.db-docker-card.db-clickable:hover {
+    border-color: var(--accent-color, #4a9eff);
+    background: rgba(74, 158, 255, 0.1);
+}
+
+/* 客户端卡片操作提示 */
+.db-client-action-hint,
+.db-docker-action-hint {
+    font-size: 0.7rem;
+    color: var(--accent-color, #4a9eff);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    white-space: nowrap;
+}
+
+.db-client-card.db-clickable:hover .db-client-action-hint,
+.db-docker-card.db-clickable:hover .db-docker-action-hint {
+    opacity: 1;
+}
+
+/* Docker 卡片右侧区域 */
+.db-docker-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.25rem;
+}
+
+/* 连接表单 Docker 信息区域 */
+.db-form-docker-info {
+    background: linear-gradient(135deg, rgba(0, 100, 200, 0.15), rgba(0, 150, 200, 0.1));
+    border: 1px solid rgba(0, 150, 255, 0.3);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.db-docker-indicator {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--accent-color, #4a9eff);
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.db-docker-details {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.db-docker-detail-item {
+    display: flex;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+}
+
+.db-docker-detail-item .label {
+    color: var(--text-secondary, #999);
+    min-width: 70px;
+}
+
+.db-docker-detail-item .value {
+    color: var(--text-primary, #e0e0e0);
+    font-family: 'Consolas', 'Monaco', monospace;
+    word-break: break-all;
+}
+
+/* 表单全宽组 */
+.db-form-full-width {
+    grid-column: 1 / -1;
+}
+
+/* 连接模式提示 */
+/* 连接模式提示 */
+.db-form-hint {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-primary, #d1d1d1);
+    padding: 0.75rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    line-height: 1.5;
+}
+
+.db-form-hint .hint-docker {
+    color: #64b5f6; /* Brighter blue for better readability on dark bg */
+    font-weight: 500;
+    display: block;
+}
+
+.db-form-hint .hint-direct {
+    color: #81c784; /* Brighter green */
+    font-weight: 500;
+    display: block;
+}
+
+/* 客户端卡片布局优化 */
+.db-client-card {
+    position: relative;
+}
+
+.db-client-card .db-client-action-hint {
+    position: absolute;
+    right: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+/* 行操作按钮 */
+.db-row-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-start;
+}
+
+.db-row-edit {
+    color: var(--accent-color, #4a9eff);
+}
+
+.db-row-edit:hover {
+    color: var(--accent-hover, #3a8eef);
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+.db-row-delete {
+    color: var(--error-color, #f44336);
+}
+
+.db-row-delete:hover {
+    color: var(--error-hover, #d32f2f);
+    background: rgba(244, 67, 54, 0.1);
+    border-radius: 4px;
+}
+
+/* 编辑模态框 */
+.db-edit-null-check {
+    cursor: pointer;
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent-color, #4a9eff);
+}
+

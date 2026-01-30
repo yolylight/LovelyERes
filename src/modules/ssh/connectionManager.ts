@@ -11,6 +11,7 @@ import { invoke } from '@tauri-apps/api/core';
 export interface SSHAccountCredential {
   username: string;
   authType: 'password' | 'key' | 'certificate';
+  password?: string; // 可选的明文密码，仅用于传输，保存时会加密
   encryptedPassword?: string; // AES加密的密码
   keyPath?: string;
   keyPassphrase?: string; // SSH密钥的密码短语

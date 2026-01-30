@@ -104,6 +104,14 @@ export class StateManager {
    * 设置当前页面
    */
   setCurrentPage(page: 'dashboard' | 'system-info' | 'ssh-terminal' | 'remote-operations' | 'docker' | 'emergency-commands' | 'log-analysis' | 'settings'): void {
+    // 强制检查连接状态
+    const allowedOffline = ['dashboard', 'settings'];
+    if (!this.state.isConnected && !allowedOffline.includes(page)) {
+        console.warn(`[StateManager] 拦截了对 ${page} 的访问 (未连接服务器)`);
+        // 可选：强制重定向回 Allow list 中的页面，或者直接忽略
+        // 这里选择直接忽略，保持当前页面
+        return;
+    }
     this.setState({ currentPage: page });
   }
 

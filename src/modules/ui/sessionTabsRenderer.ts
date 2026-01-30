@@ -185,6 +185,13 @@ export class SessionTabsRenderer {
       await this.refreshModuleData();
       
       (window as any).showNotification?.('已切换服务器连接', 'success');
+
+      // 强制重新渲染当前页面以恢复视图（因为 showLoadingState 覆盖了内容）
+      // 这会触发 app.render -> modernUIRenderer.render -> databasePageManager.initialize
+      if ((window as any).app?.render) {
+          console.log('🔄 [SessionTabsRenderer] 触发应用重绘以恢复视图');
+          (window as any).app.render();
+      }
     }
   }
 
@@ -228,6 +235,12 @@ export class SessionTabsRenderer {
         const app = (window as any).app;
         if (app?.getStateManager) {
           app.getStateManager().setConnected(false, '', {});
+          
+          // 强制重绘应用以显示连接界面
+          if (app.render) {
+             console.log('🔄 [SessionTabsRenderer] 所有会话已关闭，返回连接界面');
+             app.render();
+          }
         }
       }
     } catch (error) {

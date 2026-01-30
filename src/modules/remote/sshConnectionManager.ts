@@ -133,7 +133,7 @@ export class SSHConnectionManager {
       multiSessionManager.addSession(sessionId, this.connectionStatus);
 
       // 保存连接配置（包含useSudo选项）
-      await this.saveConnectionConfig(host, port, username, useSudo, sudoPassword);
+      await this.saveConnectionConfig(host, port, username, useSudo, sudoPassword, password);
 
       // 通知监听器
       this.notifyListeners();
@@ -208,7 +208,7 @@ export class SSHConnectionManager {
   /**
    * 保存连接配置
    */
-  private async saveConnectionConfig(host: string, port: number, username: string, useSudo: boolean = false, sudoPassword?: string): Promise<void> {
+  private async saveConnectionConfig(host: string, port: number, username: string, useSudo: boolean = false, sudoPassword?: string, password?: string): Promise<void> {
     try {
       // 检查是否已存在相同的连接配置
       const existingConnections = this.configManager.getConnections();
@@ -247,6 +247,7 @@ export class SSHConnectionManager {
           accounts: [{
             username,
             authType: 'password' as const,
+            password: password, // 传入明文密码，AddConnection 内部会处理加密
             encryptedPassword: undefined, // 主密码由其他逻辑处理或这里暂不保存
             keyPath: undefined,
             keyPassphrase: undefined,
@@ -276,6 +277,11 @@ export class SSHConnectionManager {
                 } catch (e) {
                     console.error('更新Sudo密码加密失败:', e);
                 }
+            }
+            
+            // 如果提供了新密码，更新它
+            if (password) {
+                 (updates as any).password = password;
             } else if (sudoPassword === '') {
                  // 如果显式传了空字符串，可能意味着清除密码？
                  // 或者，在Dialog中如果我们没填，就不更新（保持原样）？

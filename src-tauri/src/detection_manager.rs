@@ -128,10 +128,7 @@ pub struct NetworkTestResult {
 /// 端口安全扫描
 pub fn detect_port_scan(manager: &mut SSHManagerRussh) -> Result<PortScanResult, String> {
     // 执行端口扫描命令
-    let cmd = r#"
-        # 扫描常见端口
-        netstat -tlnp 2>/dev/null | grep LISTEN || ss -tlnp 2>/dev/null | grep LISTEN
-    "#;
+    let cmd = "netstat -tlnp 2>/dev/null | grep LISTEN || ss -tlnp 2>/dev/null | grep LISTEN";
 
     let output_result = manager.execute_command(cmd)
         .map_err(|e| format!("执行端口扫描命令失败: {}", e))?;
@@ -227,26 +224,27 @@ pub fn detect_user_audit(manager: &mut SSHManagerRussh) -> Result<UserAuditResul
 
 /// 后门检测
 pub fn detect_backdoor(manager: &mut SSHManagerRussh) -> Result<BackdoorScanResult, String> {
-    // 检查可疑的计划任务
-    let cron_cmd = r#"
-        (crontab -l 2>/dev/null; sudo crontab -l 2>/dev/null; cat /etc/crontab 2>/dev/null) | \
-        grep -v '^#' | grep -v '^$' | grep -E '(curl|wget|nc|bash|sh|python)'
-    "#;
+    let cron_cmd = "(crontab -l 2>/dev/null; sudo -n crontab -l 2>/dev/null; sudo -n cat /etc/crontab 2>/dev/null; sudo -n sh -c \"cat /etc/cron.d/* 2>/dev/null\" 2>/dev/null; sudo -n sh -c \"cat /var/spool/cron/* 2>/dev/null\" 2>/dev/null; sudo -n sh -c \"cat /var/spool/cron/crontabs/* 2>/dev/null\" 2>/dev/null) 2>&1";
     let cron_output = manager.execute_command(cron_cmd)
         .map(|r| r.output)
         .unwrap_or_default();
 
-    let suspicious_cron: Vec<String> = cron_output
+    let suspicious_keywords = ["curl", "wget", "nc", "bash", "sh", "python"];
+    let mut suspicious_cron: Vec<String> = cron_output
         .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|s| s.to_string())
+        .map(|s| s.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with('#'))
+        .filter(|line| !line.contains("sudo:") && !line.contains("usage:"))
+        .filter(|line| suspicious_keywords.iter().any(|k| line.contains(k)))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
         .collect();
+        
+    suspicious_cron.sort();
 
     // 检查可疑的启动项
-    let autostart_cmd = r#"
-        find /etc/init.d /etc/systemd/system /etc/rc*.d -type f 2>/dev/null | \
-        head -20
-    "#;
+    let autostart_cmd = "find /etc/init.d /etc/systemd/system /etc/rc*.d -type f 2>/dev/null | head -20";
     let autostart_output = manager.execute_command(autostart_cmd)
         .map(|r| r.output)
         .unwrap_or_default();
@@ -259,10 +257,7 @@ pub fn detect_backdoor(manager: &mut SSHManagerRussh) -> Result<BackdoorScanResu
         .collect();
 
     // 检查 SSH authorized_keys
-    let ssh_keys_cmd = r#"
-        find /home /root -name authorized_keys 2>/dev/null | \
-        xargs cat 2>/dev/null | grep -v '^#' | grep -v '^$' | wc -l
-    "#;
+    let ssh_keys_cmd = "find /home /root -name authorized_keys 2>/dev/null | xargs cat 2>/dev/null | grep -v '^#' | grep -v '^$' | wc -l";
     let keys_count_output = manager.execute_command(ssh_keys_cmd)
         .map(|r| r.output)
         .unwrap_or_default();
@@ -270,10 +265,7 @@ pub fn detect_backdoor(manager: &mut SSHManagerRussh) -> Result<BackdoorScanResu
     let mut suspicious_ssh_keys = Vec::new();
     if let Ok(count) = keys_count_output.trim().parse::<usize>() {
         if count > 0 {
-            let keys_cmd = r#"
-                find /home /root -name authorized_keys 2>/dev/null | \
-                xargs cat 2>/dev/null | grep -v '^#' | grep -v '^$' | head -5
-            "#;
+            let keys_cmd = "find /home /root -name authorized_keys 2>/dev/null | xargs cat 2>/dev/null | grep -v '^#' | grep -v '^$' | head -5";
             let keys_output = manager.execute_command(keys_cmd)
                 .map(|r| r.output)
                 .unwrap_or_default();
@@ -352,9 +344,7 @@ pub fn detect_file_permission(manager: &mut SSHManagerRussh) -> Result<FilePermi
         .collect();
 
     // 检查敏感文件权限
-    let sensitive_cmd = r#"
-        ls -l /etc/passwd /etc/shadow /etc/sudoers 2>/dev/null
-    "#;
+    let sensitive_cmd = "ls -l /etc/passwd /etc/shadow /etc/sudoers 2>/dev/null";
     let sensitive_output = manager.execute_command(sensitive_cmd)
         .map(|r| r.output)
         .unwrap_or_default();
@@ -411,9 +401,7 @@ pub fn detect_ssh_audit(manager: &mut SSHManagerRussh) -> Result<SSHAuditResult,
 /// 日志分析
 pub fn detect_log_analysis(manager: &mut SSHManagerRussh) -> Result<LogAnalysisResult, String> {
     // 检查暴力破解尝试
-    let brute_force_cmd = r#"
-        grep -i 'failed password' /var/log/auth.log /var/log/secure 2>/dev/null | wc -l
-    "#;
+    let brute_force_cmd = "grep -i 'failed password' /var/log/auth.log /var/log/secure 2>/dev/null | wc -l";
     let brute_force_count_result = manager.execute_command(brute_force_cmd)
         .unwrap_or_else(|_| crate::ssh_manager_russh::TerminalOutput {
             command: brute_force_cmd.to_string(),
@@ -426,9 +414,7 @@ pub fn detect_log_analysis(manager: &mut SSHManagerRussh) -> Result<LogAnalysisR
     let attempts = brute_force_count.trim().parse::<u32>().unwrap_or(0);
 
     // 获取详情
-    let details_cmd = r#"
-        grep -i 'failed password' /var/log/auth.log /var/log/secure 2>/dev/null | tail -5
-    "#;
+    let details_cmd = "grep -i 'failed password' /var/log/auth.log /var/log/secure 2>/dev/null | tail -5";
     let details_output = manager.execute_command(details_cmd)
         .map(|r| r.output)
         .unwrap_or_default();
@@ -440,9 +426,7 @@ pub fn detect_log_analysis(manager: &mut SSHManagerRussh) -> Result<LogAnalysisR
         .collect();
 
     // 检查异常登录
-    let abnormal_cmd = r#"
-        last -10 2>/dev/null | grep -v 'wtmp begins'
-    "#;
+    let abnormal_cmd = "last -10 2>/dev/null | grep -v 'wtmp begins'";
     let abnormal_output = manager.execute_command(abnormal_cmd)
         .map(|r| r.output)
         .unwrap_or_default();
@@ -464,9 +448,7 @@ pub fn detect_log_analysis(manager: &mut SSHManagerRussh) -> Result<LogAnalysisR
 /// 防火墙检查
 pub fn detect_firewall_check(manager: &mut SSHManagerRussh) -> Result<FirewallCheckResult, String> {
     // 检查防火墙状态
-    let status_cmd = r#"
-        systemctl is-active iptables firewalld ufw 2>/dev/null | grep -q 'active' && echo 'active' || echo 'inactive'
-    "#;
+    let status_cmd = "systemctl is-active iptables firewalld ufw 2>/dev/null | grep -q 'active' && echo 'active' || echo 'inactive'";
     let status_output = manager.execute_command(status_cmd)
         .map(|r| r.output)
         .unwrap_or_else(|_| "inactive".to_string());
@@ -822,15 +804,8 @@ pub fn detect_system_updates(manager: &mut SSHManagerRussh) -> Result<GenericDet
     let mut issues = Vec::new();
 
     // 检查可用更新（根据不同发行版）
-    let check_cmd = r#"
-        if command -v yum >/dev/null 2>&1; then
-            yum check-update 2>/dev/null | grep -v "^$" | tail -n +2 | wc -l
-        elif command -v apt >/dev/null 2>&1; then
-            apt list --upgradable 2>/dev/null | grep -c "upgradable"
-        else
-            echo "0"
-        fi
-    "#;
+    // 检查可用更新（根据不同发行版）
+    let check_cmd = "if command -v yum >/dev/null 2>&1; then yum check-update 2>/dev/null | grep -v \"^$\" | tail -n +2 | wc -l; elif command -v apt >/dev/null 2>&1; then apt list --upgradable 2>/dev/null | grep -c \"upgradable\"; else echo \"0\"; fi";
 
     let result = manager.execute_command(check_cmd)?;
     let count: usize = result.output.trim().parse().unwrap_or(0);

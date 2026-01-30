@@ -9,7 +9,7 @@ import { DashboardRenderer } from './dashboardRenderer';
 import { KubernetesRenderer } from './kubernetesRenderer';
 import { SftpContextMenuRenderer } from './sftpContextMenu';
 import { LogAnalysisRenderer } from './logAnalysisRenderer';
-import { DatabaseRenderer } from './databaseRenderer';
+
 import { emergencyCategories } from '../emergency/commands';
 import {
   List,
@@ -73,7 +73,7 @@ export class ModernUIRenderer {
   private logAnalysisRenderer: LogAnalysisRenderer;
 
   public sftpContextMenuRenderer: SftpContextMenuRenderer;
-  public databaseRenderer: DatabaseRenderer;
+
 
   constructor(stateManager: StateManager) {
     this.stateManager = stateManager;
@@ -82,7 +82,7 @@ export class ModernUIRenderer {
     this.kubernetesRenderer = new KubernetesRenderer();
     this.logAnalysisRenderer = new LogAnalysisRenderer();
     this.sftpContextMenuRenderer = new SftpContextMenuRenderer();
-    this.databaseRenderer = new DatabaseRenderer();
+
 
     // 注入系统信息页面样式
     if (!document.querySelector('#system-info-styles')) {
@@ -178,6 +178,13 @@ export class ModernUIRenderer {
   private registerLogAnalysisFunctions(): void {
     (window as any).switchLogSource = (source: 'file' | 'journalctl') => {
       this.logAnalysisRenderer.setUseJournalctl(source === 'journalctl');
+      
+      // 更新工具栏UI
+      const toolbarContainer = document.querySelector('.log-toolbar');
+      if (toolbarContainer) {
+        toolbarContainer.outerHTML = this.logAnalysisRenderer.renderToolbar();
+      }
+
       // 同步状态
       (window as any).logAnalysisState = (window as any).logAnalysisState || {};
       (window as any).logAnalysisState.useJournalctl = source === 'journalctl';
@@ -243,6 +250,7 @@ export class ModernUIRenderer {
       // 同步状态
       (window as any).logAnalysisState = (window as any).logAnalysisState || {};
       (window as any).logAnalysisState.logPath = path;
+      (window as any).logAnalysisState.page = 1; // 重置页码为1
       if (typeof (window as any).refreshLogAnalysis === 'function') {
         (window as any).refreshLogAnalysis();
       }
@@ -647,7 +655,7 @@ export class ModernUIRenderer {
       {
         id: 'database',
         icon: Data({ theme: 'outline', size: '18', fill: 'currentColor' }),
-        title: '数据库(不可用)',
+        title: '数据库管理',
         active: currentPage === 'database'
       },
       {
@@ -829,7 +837,7 @@ export class ModernUIRenderer {
       case 'kubernetes':
         return this.renderKubernetesPage();
       case 'database':
-        return this.databaseRenderer.render();
+        return '<div id="database-page-container" style="height: 100%; width: 100%;"></div>';
       case 'log-analysis':
         return this.renderLogAnalysisPage();
       case 'settings':
@@ -2060,7 +2068,7 @@ export class ModernUIRenderer {
               " onclick="window.hideAddServerForm()">
                 取消
               </button>
-              <button type="submit" class="save-btn modern-btn primary" style="
+              <button type="button" id="save-server-btn" class="save-btn modern-btn primary" style="
                 padding: 10px 24px;
                 font-size: 13px;
                 width: 120px;
