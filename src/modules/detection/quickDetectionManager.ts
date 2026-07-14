@@ -262,6 +262,9 @@ export class QuickDetectionManager {
       case 'dns-config':
         result = await this.runDNSConfigCheck();
         break;
+      case 'memshell-scan':
+        result = await this.runMemshellScan();
+        break;
 
       // 性能检测
       case 'cpu-test':
@@ -1016,6 +1019,19 @@ export class QuickDetectionManager {
     } catch (error) {
       console.error('DNS 配置检查失败:', error);
       return this.createErrorResult('DNS 配置检查失败');
+    }
+  }
+
+  /**
+   * 内存马排查
+   */
+  private async runMemshellScan(): Promise<DetectionResult> {
+    try {
+      const result = await invoke('detect_memshell') as any;
+      return this.processBasicDetectionResult(result, '内存马排查');
+    } catch (error) {
+      console.error('内存马排查失败:', error);
+      return this.createErrorResult('内存马排查失败');
     }
   }
 
@@ -3077,7 +3093,8 @@ export class QuickDetectionManager {
       'cpu-test': 'CPU 压力测试',
       'memory-test': '内存性能测试',
       'disk-test': '磁盘 I/O 测试',
-      'network-test': '网络性能测试'
+      'network-test': '网络性能测试',
+      'memshell-scan': '内存马排查'
     };
     return names[id] || id;
   }
@@ -3098,7 +3115,8 @@ export class QuickDetectionManager {
       'cpu-test': '测试 CPU 性能和频率',
       'memory-test': '测试内存读写速度',
       'disk-test': '测试磁盘读写性能',
-      'network-test': '测试带宽和延迟'
+      'network-test': '测试带宽和延迟',
+      'memshell-scan': '检测 Java 内存马（Tomcat/Spring等）'
     };
     return descriptions[id] || '';
   }

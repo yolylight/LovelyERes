@@ -1305,6 +1305,13 @@ async fn detect_dns_config(state: State<'_, AppState>) -> Result<detection_manag
     detection_manager::detect_dns_config(&mut manager)
 }
 
+/// 内存马排查
+#[tauri::command]
+async fn detect_memshell(state: State<'_, AppState>) -> Result<detection_manager::GenericDetectionResult, String> {
+    let mut manager = state.ssh_manager.lock().unwrap();
+    detection_manager::detect_memshell(&mut manager)
+}
+
 // SSH 终端管理命令
 
 /// 创建 SSH 终端会话
@@ -2317,6 +2324,7 @@ pub fn run() {
             detect_history_audit,
             detect_ntp_config,
             detect_dns_config,
+            detect_memshell,
             // SSH 终端管理
             ssh_create_terminal_session,
             ssh_close_terminal_session,
