@@ -4,29 +4,19 @@
  */
 
 export class ThemeManager {
-  private currentTheme: 'light' | 'dark' | 'sakura' = 'light';
+  private currentTheme: 'light' | 'dark' | 'sakura' | 'midnight' | 'ocean' = 'light';
 
   /**
    * 切换主题
    */
+  private static readonly THEME_CYCLE = ['light', 'dark', 'sakura', 'midnight', 'ocean'] as const;
+
   toggleTheme(): string {
     const body = document.body;
     const currentTheme = body.getAttribute('data-theme') || 'light';
-
-    let newTheme: string;
-    switch (currentTheme) {
-      case 'light':
-        newTheme = 'dark';
-        break;
-      case 'dark':
-        newTheme = 'sakura';
-        break;
-      case 'sakura':
-        newTheme = 'light';
-        break;
-      default:
-        newTheme = 'light';
-    }
+    const currentIndex = ThemeManager.THEME_CYCLE.indexOf(currentTheme as any);
+    const nextIndex = (currentIndex + 1) % ThemeManager.THEME_CYCLE.length;
+    const newTheme = ThemeManager.THEME_CYCLE[nextIndex];
 
     this.setTheme(newTheme);
     return newTheme;
@@ -39,12 +29,15 @@ export class ThemeManager {
     const body = document.body;
     const html = document.documentElement;
 
+    // 添加过渡动画类
+    body.classList.add('theme-transitioning');
+
     // 设置data-theme属性
     body.setAttribute('data-theme', theme);
     html.setAttribute('data-theme', theme);
 
     // 更新body类名
-    body.classList.remove('light-theme', 'dark-theme', 'sakura-theme');
+    body.classList.remove('light-theme', 'dark-theme', 'sakura-theme', 'midnight-theme', 'ocean-theme');
     body.classList.add(`${theme}-theme`);
 
     // 动态加载主题CSS文件
@@ -53,35 +46,23 @@ export class ThemeManager {
     // 保存到localStorage
     localStorage.setItem('lovelyres-theme', theme);
 
-    this.currentTheme = theme as 'light' | 'dark' | 'sakura';
+    this.currentTheme = theme as 'light' | 'dark' | 'sakura' | 'midnight' | 'ocean';
+
+    // 移除过渡动画类 (在动画完成后)
+    setTimeout(() => {
+      body.classList.remove('theme-transitioning');
+    }, 500);
 
     console.log('主题已设置为:', theme);
   }
 
   /**
-   * 动态加载主题CSS文件
+   * 主题CSS已通过 main.css 静态导入，无需动态加载。
+   * 主题通过 [data-theme="xxx"] 选择器在 CSS 文件中切换。
    */
-  private loadThemeCSS(theme: string): void {
-    // 移除之前的主题CSS
-    const existingThemeLinks = document.querySelectorAll('link[data-theme-css]');
-    existingThemeLinks.forEach(link => link.remove());
-
-    // 加载新的主题CSS
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = `/src/css/themes/${theme}.css`;
-    link.setAttribute('data-theme-css', theme);
-
-    // 添加加载完成事件监听
-    link.onload = () => {
-      console.log(`✅ 主题CSS已加载: ${theme}`);
-    };
-
-    link.onerror = () => {
-      console.error(`❌ 主题CSS加载失败: ${theme}`);
-    };
-
-    document.head.appendChild(link);
+  private loadThemeCSS(_theme: string): void {
+    // 所有主题 CSS 在 main.css → themes/index.css 中静态导入
+    // 切换通过 body[data-theme] 属性自动生效，无需动态 <link>
   }
 
   /**
@@ -98,7 +79,7 @@ export class ThemeManager {
     // 从localStorage加载保存的主题
     const savedTheme = localStorage.getItem('lovelyres-theme');
 
-    if (savedTheme && ['light', 'dark', 'sakura'].includes(savedTheme)) {
+    if (savedTheme && ['light', 'dark', 'sakura', 'midnight', 'ocean'].includes(savedTheme)) {
       this.setTheme(savedTheme);
     } else {
       // 检查系统偏好
@@ -165,6 +146,32 @@ export class ThemeManager {
           surface: '#fffefe',
           text: '#744c4c'
         }
+      },
+      midnight: {
+        name: '暗夜',
+        icon: '🔮',
+        description: '高对比霓虹暗黑主题',
+        colors: {
+          primary: '#7c3aed',
+          secondary: '#a855f7',
+          accent: '#c084fc',
+          background: '#000000',
+          surface: '#0a0a0f',
+          text: '#fafafa'
+        }
+      },
+      ocean: {
+        name: '深海',
+        icon: '🌊',
+        description: '沉浸专注的蓝绿主题',
+        colors: {
+          primary: '#06b6d4',
+          secondary: '#22d3ee',
+          accent: '#67e8f9',
+          background: '#0b1120',
+          surface: '#111c32',
+          text: '#e2e8f0'
+        }
       }
     };
 
@@ -178,7 +185,9 @@ export class ThemeManager {
     return [
       this.getThemeConfig('light'),
       this.getThemeConfig('dark'),
-      this.getThemeConfig('sakura')
+      this.getThemeConfig('sakura'),
+      this.getThemeConfig('midnight'),
+      this.getThemeConfig('ocean')
     ];
   }
 

@@ -115,12 +115,13 @@ impl DatabaseManager {
     /// 检测 Docker 数据库容器
     fn detect_docker_containers(
         ssh_manager: &SSHManagerRussh,
-        session_id: &str,
+        _session_id: &str,
     ) -> Result<Vec<DockerDatabaseContainer>, String> {
         let docker_manager = DockerManager::new();
-        
+
         // 使用 DockerManager 对可重用的 Docker 列表功能
-        let summaries = match docker_manager.list_containers(ssh_manager, session_id) {
+        // 注：docker_manager 使用当前会话执行命令（execute_command 内部解析当前会话）
+        let summaries = match docker_manager.list_containers(ssh_manager) {
             Ok(s) => s,
             Err(e) => {
                 // 如果 Docker 不可用（例如未安装），通常会返回错误
@@ -1842,7 +1843,199 @@ impl DatabaseManager {
 
                 Self::execute_query(ssh_manager, config, &query)
             }
-            _ => Err(format!("虽然 {:?} 支持查询，但暂不支持插入操作", config.db_type)),
+             _ => Err(format!("虽然 {:?} 支持查询，但暂不支持插入操作", config.db_type)),
         }
     }
+}
+
+// ================== Tauri 命令接口 ==================
+use tauri::State;
+use crate::AppState;
+use crate::database_types;
+use crate::settings;
+
+/// 检测服务器数据库环境
+#[tauri::command]
+pub async fn db_detect_environment(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<database_types::DatabaseEnvironment, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::detect_environment(ssh_manager, &session_id)
+}
+
+/// 测试数据库连接
+#[tauri::command]
+pub async fn db_test_connection(
+    config: database_types::DatabaseConnection,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::test_connection(ssh_manager, &config)
+}
+
+/// 执行数据库查询
+#[tauri::command]
+pub async fn db_execute_query(
+    config: database_types::DatabaseConnection,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<database_types::QueryResult, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::execute_query(ssh_manager, &config, &query)
+}
+
+/// 保存数据库连接配置
+#[tauri::command]
+pub async fn db_save_connections(
+    connections: Vec<database_types::DatabaseConnection>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _manager = state.ssh_connection_manager.lock().unwrap();
+    
+    // 将连接配置序列化并保存
+    let mut app_data_dir = settings::get_app_data_dir()?;
+    app_data_dir.push("db_connections.json");
+    
+    let content = serde_json::to_string_pretty(&connections)
+        .map_err(|e| format!("序列化数据库连接配置失败: {}", e))?;
+    
+    std::fs::write(&app_data_dir, content)
+        .map_err(|e| format!("保存数据库连接配置失败: {}", e))?;
+    
+    println!("✅ 成功保存 {} 个数据库连接配置", connections.len());
+    Ok(())
+}
+
+/// 加载数据库连接配置
+#[tauri::command]
+pub async fn db_load_connections(
+    state: State<'_, AppState>,
+) -> Result<Vec<database_types::DatabaseConnection>, String> {
+    let _manager = state.ssh_connection_manager.lock().unwrap();
+    
+    let mut app_data_dir = settings::get_app_data_dir()?;
+    app_data_dir.push("db_connections.json");
+    
+    if !app_data_dir.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = std::fs::read_to_string(&app_data_dir)
+        .map_err(|e| format!("读取数据库连接配置失败: {}", e))?;
+    
+    let connections: Vec<database_types::DatabaseConnection> = serde_json::from_str(&content)
+        .map_err(|e| format!("解析数据库连接配置失败: {}", e))?;
+    
+    Ok(connections)
+}
+
+/// 加密数据库密码
+#[tauri::command]
+pub async fn db_encrypt_password(
+    password: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let manager = state.ssh_connection_manager.lock().unwrap();
+    manager.encrypt_password(&password).map_err(|e| e.to_string())
+}
+
+/// 解密数据库密码
+#[tauri::command]
+pub async fn db_decrypt_password(
+    encrypted_password: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let manager = state.ssh_connection_manager.lock().unwrap();
+    manager.decrypt_password(&encrypted_password).map_err(|e| e.to_string())
+}
+
+/// 运行数据库安全审计
+#[tauri::command]
+pub async fn db_run_security_audit(
+    config: database_types::DatabaseConnection,
+    state: State<'_, AppState>,
+) -> Result<Vec<database_types::SecurityCheckResult>, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::run_security_audit(ssh_manager, &config)
+}
+
+/// 列出数据库
+#[tauri::command]
+pub async fn db_list_databases(
+    config: database_types::DatabaseConnection,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::list_databases(ssh_manager, &config)
+}
+
+/// 列出表
+#[tauri::command]
+pub async fn db_list_tables(
+    config: database_types::DatabaseConnection,
+    database: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<database_types::TableInfo>, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::list_tables(ssh_manager, &config, &database)
+}
+
+/// 获取表结构
+#[tauri::command]
+pub async fn db_describe_table(
+    config: database_types::DatabaseConnection,
+    database: String,
+    table: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<database_types::TableColumn>, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::describe_table(ssh_manager, &config, &database, &table)
+}
+
+/// 分页查询表数据
+#[tauri::command]
+pub async fn db_select_rows(
+    config: database_types::DatabaseConnection,
+    database: String,
+    table: String,
+    page: u32,
+    page_size: u32,
+    state: State<'_, AppState>,
+) -> Result<database_types::PaginatedResult, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::select_rows(ssh_manager, &config, &database, &table, page, page_size)
+}
+
+/// 更新行
+#[tauri::command]
+pub async fn db_update_row(
+    config: database_types::DatabaseConnection,
+    params: database_types::UpdateRowParams,
+    state: State<'_, AppState>,
+) -> Result<database_types::QueryResult, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::update_row(ssh_manager, &config, &params)
+}
+
+/// 删除行
+#[tauri::command]
+pub async fn db_delete_row(
+    config: database_types::DatabaseConnection,
+    params: database_types::DeleteRowParams,
+    state: State<'_, AppState>,
+) -> Result<database_types::QueryResult, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::delete_row(ssh_manager, &config, &params)
+}
+
+/// 插入行
+#[tauri::command]
+pub async fn db_insert_row(
+    config: database_types::DatabaseConnection,
+    params: database_types::InsertRowParams,
+    state: State<'_, AppState>,
+) -> Result<database_types::QueryResult, String> {
+    let ssh_manager = &state.ssh_manager;
+    DatabaseManager::insert_row(ssh_manager, &config, &params)
 }

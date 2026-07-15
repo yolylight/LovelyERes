@@ -29,10 +29,15 @@ impl DockerManager {
     pub fn list_containers(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
     ) -> LovelyResResult<Vec<DockerContainerSummary>> {
+        if !ssh.is_connected() {
+            return Err(LovelyResError::ConnectionError(
+                "未建立 SSH 连接".to_string(),
+            ));
+        }
+
         let ps_output = ensure_success(
-            run_command(ssh, session_id, "docker ps -a --format '{{json .}}'")?,
+            run_command(ssh, "docker ps -a --format '{{json .}}'")?,
             "获取 Docker 容器列表失败",
         )?;
 
@@ -54,8 +59,8 @@ impl DockerManager {
             return Ok(Vec::new());
         }
 
-        let stats_map = self.fetch_stats_map(ssh, session_id)?;
-        let inspect_map = self.fetch_inspect_map(ssh, session_id, &rows)?;
+        let stats_map = self.fetch_stats_map(ssh)?;
+        let inspect_map = self.fetch_inspect_map(ssh, &rows)?;
 
         let mut summaries = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -78,7 +83,6 @@ impl DockerManager {
     pub fn perform_action(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
         action: &str,
     ) -> LovelyResResult<DockerActionResult> {
@@ -97,11 +101,11 @@ impl DockerManager {
             shell_quote(container_ref)
         );
         ensure_success(
-            run_command(ssh, session_id, &command)?,
+            run_command(ssh, &command)?,
             &format!("执行 {} 操作失败", action),
         )?;
 
-        let inspect = self.fetch_inspect(ssh, session_id, container_ref)?;
+        let inspect = self.fetch_inspect(ssh, container_ref)?;
         let state = normalize_string(inspect.state.status.as_deref()).unwrap_or_else(|| "unknown".to_string());
 
         Ok(DockerActionResult {
@@ -116,7 +120,6 @@ impl DockerManager {
     pub fn get_logs(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
         options: Option<DockerLogsOptions>,
     ) -> LovelyResResult<String> {
@@ -143,7 +146,7 @@ impl DockerManager {
         }
 
         let output = ensure_success(
-            run_command(ssh, session_id, &command)?,
+            run_command(ssh, &command)?,
             "获取容器日志失败",
         )?;
 
@@ -154,17 +157,15 @@ impl DockerManager {
     pub fn inspect(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
     ) -> LovelyResResult<Value> {
-        self.fetch_inspect_raw(ssh, session_id, container_ref)
+        self.fetch_inspect_raw(ssh, container_ref)
     }
 
     /// 读取容器内文件
     pub fn read_file(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
         path: &str,
     ) -> LovelyResResult<String> {
@@ -175,7 +176,7 @@ impl DockerManager {
             shell_quote(&inner)
         );
         let output = ensure_success(
-            run_command(ssh, session_id, &command)?,
+            run_command(ssh, &command)?,
             &format!("读取容器文件 {} 失败", path),
         )?;
         Ok(output.output)
@@ -185,7 +186,6 @@ impl DockerManager {
     pub fn exec_command(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
         command: &str,
         shell: &str,
@@ -213,14 +213,13 @@ impl DockerManager {
         );
 
         // 执行命令
-        run_command(ssh, session_id, &docker_command)
+        run_command(ssh, &docker_command)
     }
 
     /// 写入容器内文件
     pub fn write_file(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
         path: &str,
         content: &str,
@@ -230,37 +229,6 @@ impl DockerManager {
         }
 
         let temp_path = generate_temp_path();
-        // write_sftp_file requires handle inside SSHManager, exposed via dedicated method? 
-        // SSHManagerRussh has write_sftp_file method which likely takes path and content.
-        // It might NOT take session_id if it's based on current session?
-        // Let's check SSHManagerRussh::write_sftp_file signature if possible. 
-        // Based on previous code: ssh.write_sftp_file(&temp_path, content.as_bytes())
-        // If SSHManagerRussh::write_sftp_file assumes current session, we might have an issue if session_id != current.
-        // But for now, assuming we must migrate EVERYTHING, let's look at SSHManagerRussh.write_sftp_file.
-        // The grep showed write_sftp_file_async taking handle.
-        // The wrapper `write_sftp_file` on `SSHManagerRussh` probably sends WorkerCommand::WriteSftpFile { session_id... }?
-        // If so, it should take session_id.
-        // If the original code `ssh.write_sftp_file` didn't take session_id, then it used default.
-        // I will assume for now I should use `ssh.write_sftp_file(session_id, ...)` if available, or `ssh.write_sftp_file`...
-        // Wait, if I change `ssh` to `&SSHManagerRussh` (from `&mut`), `write_sftp_file` must operate on `&self`.
-        
-        // I'll assume I can use `ssh.write_sftp_file_with_session(session_id, ...)`?
-        // Or I should revert to `run_command` based file writing (echo/cat) if SFTP isn't easily accessible?
-        // No, `write_sftp_file` is better.
-        // Let's assume for this Refactor I use `ssh.write_sftp_file(path, content)` and hope it uses `current_session`.
-        // BUT if `session_id` is different, this is broken.
-        // However, I can't easily check `SSHManagerRussh` methods right now without more views.
-        // I'll assume `ssh` methods might need `session_id`.
-        // If `SSHManagerRussh` only has `write_sftp_file` (current session), I'm stuck unless I add `write_sftp_file_on_session`.
-        // Given `WorkerCommand` has `WriteSftpFile { session_id ... }`, `SSHManagerRussh` SHOULD expose it.
-        // I will attempt `ssh.write_sftp_session_file(session_id, ...)`? No.
-        // Let's look at `ssh.write_file_on_session(session_id, ...)` or similar?
-        // If not found, I will use `ssh.write_sftp_file` and comment the risk.
-        // Actually, previous code: `ssh.write_sftp_file(&temp_path, content.as_bytes())`
-        // I will keep it as `ssh.write_sftp_file` for now, assuming user is on active session for Docker management usually.
-        // For `DatabaseManager` (detection), `write_file` is NOT called.
-        // So for `list_containers` path, it is fine.
-        
         ssh.write_sftp_file(&temp_path, content.as_bytes())
             .map_err(|e| LovelyResError::SSHError(e))?;
 
@@ -272,7 +240,7 @@ impl DockerManager {
                 shell_quote(&mkdir_inner)
             );
             ensure_success(
-                run_command(ssh, session_id, &mkdir_command)?,
+                run_command(ssh, &mkdir_command)?,
                 "创建容器目录失败",
             )?;
         }
@@ -282,10 +250,10 @@ impl DockerManager {
             shell_quote(&temp_path),
             shell_quote(&format!("{}:{}", container_ref, path))
         );
-        let copy_result = run_command(ssh, session_id, &copy_command)?;
+        let copy_result = run_command(ssh, &copy_command)?;
 
         let cleanup_command = format!("rm -f {}", shell_quote(&temp_path));
-        let _ = run_command(ssh, session_id, &cleanup_command);
+        let _ = run_command(ssh, &cleanup_command);
 
         ensure_success(copy_result, &format!("写入容器文件 {} 失败", path))?;
 
@@ -301,7 +269,6 @@ impl DockerManager {
     pub fn copy(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
         request: &DockerCopyRequest,
     ) -> LovelyResResult<DockerActionResult> {
@@ -330,7 +297,7 @@ impl DockerManager {
                         shell_quote(&mkdir_inner)
                     );
                     ensure_success(
-                        run_command(ssh, session_id, &mkdir_command)?,
+                        run_command(ssh, &mkdir_command)?,
                         "创建容器目录失败",
                     )?;
                 }
@@ -355,7 +322,7 @@ impl DockerManager {
         };
 
         ensure_success(
-            run_command(ssh, session_id, &command)?,
+            run_command(ssh, &command)?,
             "执行容器文件复制失败",
         )?;
 
@@ -370,9 +337,8 @@ impl DockerManager {
     fn fetch_stats_map(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
     ) -> LovelyResResult<HashMap<String, StatsSnapshot>> {
-        let result = run_command(ssh, session_id, "docker stats --no-stream --format '{{json .}}'")?;
+        let result = run_command(ssh, "docker stats --no-stream --format '{{json .}}'")?;
         if !is_success(&result) {
             println!("?? docker stats 执行失败: {}", result.output.trim());
             return Ok(HashMap::new());
@@ -417,7 +383,6 @@ impl DockerManager {
     fn fetch_inspect_map(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         rows: &[DockerPsRow],
     ) -> LovelyResResult<HashMap<String, DockerInspect>> {
         let mut refs = HashSet::new();
@@ -438,7 +403,7 @@ impl DockerManager {
             joined
         );
         let result = ensure_success(
-            run_command(ssh, session_id, &command)?,
+            run_command(ssh, &command)?,
             "获取容器详情失败",
         )?;
 
@@ -535,10 +500,9 @@ impl DockerManager {
     fn fetch_inspect(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
     ) -> LovelyResResult<DockerInspect> {
-        let value = self.fetch_inspect_raw(ssh, session_id, container_ref)?;
+        let value = self.fetch_inspect_raw(ssh, container_ref)?;
         serde_json::from_value::<DockerInspect>(value).map_err(|err| {
             LovelyResError::DockerError(format!(
                 "解析 Docker inspect 输出失败: {}",
@@ -550,7 +514,6 @@ impl DockerManager {
     fn fetch_inspect_raw(
         &self,
         ssh: &SSHManagerRussh,
-        session_id: &str,
         container_ref: &str,
     ) -> LovelyResResult<Value> {
         let command = format!(
@@ -558,7 +521,7 @@ impl DockerManager {
             shell_quote(container_ref)
         );
         let result = ensure_success(
-            run_command(ssh, session_id, &command)?,
+            run_command(ssh, &command)?,
             "获取容器详情失败",
         )?;
 
@@ -888,9 +851,9 @@ fn extract_mounts(inspect: &DockerInspect) -> Vec<DockerMountInfo> {
         .collect()
 }
 
-fn run_command(ssh: &SSHManagerRussh, session_id: &str, command: &str) -> LovelyResResult<TerminalOutput> {
-    // 使用 session_id 执行命令 (支持 sudo)
-    ssh.execute_command_on_session(session_id, command)
+fn run_command(ssh: &SSHManagerRussh, command: &str) -> LovelyResResult<TerminalOutput> {
+    // 使用命令执行
+    ssh.execute_command(command)
         .map_err(|e| LovelyResError::SSHError(e))
 }
 

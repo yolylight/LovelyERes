@@ -9,7 +9,7 @@ export class CreateFolderModal {
 
   constructor() {
     this.createModal();
-    this.setupEventListeners();
+    // setupEventListeners is called at the end of createModal after DOM insertion
   }
 
   private createModal(): void {
@@ -171,6 +171,9 @@ export class CreateFolderModal {
 
     this.modal.style.display = 'none';
     document.body.appendChild(this.modal);
+
+    // 绑定事件监听器（必须在 appendChild 之后，确保元素在 DOM 中）
+    this.setupEventListeners();
   }
 
   private setupEventListeners(): void {
@@ -352,7 +355,7 @@ export class CreateFolderModal {
         remotePath: fullPath
       });
 
-      (window as any).showNotification && (window as any).showNotification(`文件夹创建成功: ${folderName}`, 'success');
+      window.showNotification && window.showNotification(`文件夹创建成功: ${folderName}`, 'success');
       
       // 刷新文件列表
       if ((window as any).sftpManager && (window as any).sftpManager.refreshCurrentDirectory) {
@@ -363,7 +366,7 @@ export class CreateFolderModal {
 
     } catch (error) {
       console.error('创建文件夹失败:', error);
-      (window as any).showNotification && (window as any).showNotification(`创建文件夹失败: ${error}`, 'error');
+      window.showNotification && window.showNotification(`创建文件夹失败: ${error}`, 'error');
       this.showError(`创建失败: ${error}`);
     } finally {
       // 恢复按钮状态

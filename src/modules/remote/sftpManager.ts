@@ -16,19 +16,27 @@ export interface SftpFileInfo {
   group?: string;
 }
 
+// Common UID→name mapping for emergency response
+const COMMON_UID_MAP: Record<string, string> = {
+  '0': 'root', '1': 'daemon', '2': 'bin', '33': 'www-data',
+  '65534': 'nobody', '65533': 'nogroup', '99': 'nobody',
+  '1000': 'user', '48': 'apache', '1001': 'user',
+};
+
 export class SftpManager {
-  private currentPath: string = '/';  // 默认目录改为根目录
+  private currentPath: string = '/';
   private fileList: SftpFileInfo[] = [];
   private listeners: Array<(files: SftpFileInfo[], path: string) => void> = [];
   private sortMode: 'name-asc' | 'name-desc' | 'size-asc' | 'size-desc' | 'modified-asc' | 'modified-desc' = 'name-asc';
   private collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true, ignorePunctuation: true });
+  private uidNameCache: Record<string, string> = {};
+  private uidCacheLoaded = false;
 
   /**
    * 设置排序方式，目录始终排在文件之前
    */
   setSortMode(mode: 'name-asc' | 'name-desc' | 'size-asc' | 'size-desc' | 'modified-asc' | 'modified-desc'): void {
     this.sortMode = mode;
-    // 不改变数据源，仅通知监听器以触发重渲染
     this.notifyListeners();
   }
 
@@ -57,7 +65,6 @@ export class SftpManager {
 
     const withinGroupCmp = (a: SftpFileInfo, b: SftpFileInfo) => {
       let cmp = 0;
-
       if (this.sortMode.startsWith('name-')) {
         cmp = nameCmp(a, b);
         return this.sortMode === 'name-desc' ? -cmp : cmp;
@@ -68,7 +75,6 @@ export class SftpManager {
         cmp = modifiedCmp(a, b);
         return this.sortMode === 'modified-desc' ? -cmp : cmp;
       }
-
       return 0;
     };
 
@@ -85,6 +91,7 @@ export class SftpManager {
   getCurrentFiles(): SftpFileInfo[] {
     return this.sortFiles(this.fileList);
   }
+
   /**
    * 刷新当前目录
    */
@@ -103,7 +110,6 @@ export class SftpManager {
     return this.currentPath;
   }
 
-
   /**
    * 规范化远程路径：统一为POSIX风格，去重/及去除末尾/
    */
@@ -115,12 +121,59 @@ export class SftpManager {
     return np;
   }
 
-
   /**
    * 获取当前文件列表
    */
   getFileList(): SftpFileInfo[] {
     return this.fileList;
+  }
+
+  /**
+   * 异步加载 uid→username 映射缓存
+   */
+  private async loadUidNameCache(): Promise<void> {
+    if (this.uidCacheLoaded) return;
+    try {
+      const result: any = await (window as any).__TAURI__.core.invoke('ssh_execute_command_direct', {
+        command: "cat /etc/passwd 2>/dev/null | cut -d: -f1,3"
+      });
+      const output = result?.output || '';
+      for (const line of output.split('\n')) {
+        const [name, uid] = line.split(':');
+        if (name && uid) this.uidNameCache[uid.trim()] = name.trim();
+      }
+      // Also load group names
+      const gResult: any = await (window as any).__TAURI__.core.invoke('ssh_execute_command_direct', {
+        command: "cat /etc/group 2>/dev/null | cut -d: -f1,3"
+      });
+      const gOutput = gResult?.output || '';
+      for (const line of gOutput.split('\n')) {
+        const [name, gid] = line.split(':');
+        if (name && gid) this.uidNameCache[`g${gid.trim()}`] = name.trim();
+      }
+      this.uidCacheLoaded = true;
+    } catch {
+      // Silent fail - will show numeric uids
+    }
+  }
+
+  /**
+   * 解析 owner 显示名称
+   */
+  resolveOwnerName(uid: string | undefined): string {
+    if (!uid) return '-';
+    // If it's already a name (not purely numeric), return as-is
+    if (!/^\d+$/.test(uid)) return uid;
+    return this.uidNameCache[uid] || COMMON_UID_MAP[uid] || uid;
+  }
+
+  /**
+   * 解析 group 显示名称
+   */
+  resolveGroupName(gid: string | undefined): string {
+    if (!gid) return '-';
+    if (!/^\d+$/.test(gid)) return gid;
+    return this.uidNameCache[`g${gid}`] || COMMON_UID_MAP[gid] || gid;
   }
 
   /**
@@ -134,6 +187,10 @@ export class SftpManager {
 
     try {
       // 传递 session_id 以支持多服务器连接
+      // Load uid cache in background on first access
+      if (!this.uidCacheLoaded) {
+        this.loadUidNameCache().catch((e) => console.warn('UID缓存加载失败:', e));
+      }
       const files = await (window as any).__TAURI__.core.invoke('sftp_list_files', {
         path: this.currentPath,
         sessionId: sshConnectionManager.getCurrentSessionId() || null
@@ -142,15 +199,13 @@ export class SftpManager {
       this.fileList = this.sortFiles(files);
       this.notifyListeners();
 
-      // 更新SSH活动时间
       sshConnectionManager.updateLastActivity();
 
     } catch (error) {
       console.error('获取SFTP文件列表失败:', error);
-      (window as any).showNotification && (window as any).showNotification(`获取文件列表失败: ${error}`, 'error');
+      window.showNotification && window.showNotification(`获取文件列表失败: ${error}`, 'error');
     }
   }
-
 
   /**
    * 导航到指定路径
@@ -178,7 +233,6 @@ export class SftpManager {
   async navigateToParent(): Promise<void> {
     const cur = this.normalizePath(this.currentPath);
     if (cur === '/') return;
-
     const parentPath = cur.split('/').slice(0, -1).join('/') || '/';
     await this.navigateToPath(parentPath);
   }
@@ -190,8 +244,118 @@ export class SftpManager {
     if (file.file_type === 'directory') {
       await this.navigateToPath(file.path);
     } else {
-      // 处理文件点击（可以扩展为下载、编辑等功能）
       console.log('点击文件:', file.name);
+    }
+  }
+
+  /**
+   * 检测文件风险等级 (用于应急响应高亮)
+   * 返回: 'risk-critical' | 'risk-warning' | 'risk-info' | ''
+   */
+  private getFileRiskClass(file: SftpFileInfo): string {
+    const name = file.name;
+    const perms = file.permissions || '';
+    const permsNum = parseInt(perms, 8) || 0;
+    const lowBits = permsNum & 0o7777;
+
+    // Critical: SUID/SGID 可执行文件
+    if ((permsNum & 0o4000) || (permsNum & 0o2000)) {
+      if (file.file_type === 'file') return 'risk-critical';
+    }
+
+    // Critical: 777 权限
+    if ((lowBits & 0o777) === 0o777) return 'risk-critical';
+
+    // Warning: 可疑文件名模式
+    const suspiciousPatterns = [
+      /\.(php|jsp|asp|aspx|cgi)$/i,        // Web shell 常见扩展
+      /^\..*\.(sh|py|pl|rb)$/i,            // 隐藏脚本
+      /^(shell|backdoor|hack|exploit|c99|r57|b374k|webshell)/i,
+      /\.(suspected|malware|infected)$/i,
+      /^\.\.[ ]/,                            // 伪装的 ..空格 目录
+    ];
+    for (const pat of suspiciousPatterns) {
+      if (pat.test(name)) return 'risk-warning';
+    }
+
+    // Warning: 特殊隐藏文件在敏感目录
+    if (name.startsWith('.') && name !== '..' && name !== '.' && file.file_type === 'file') {
+      const sensitiveDirs = ['/tmp', '/dev/shm', '/var/tmp', '/run'];
+      if (sensitiveDirs.some(d => this.currentPath.startsWith(d))) {
+        return 'risk-warning';
+      }
+    }
+
+    // Info: 隐藏文件
+    if (name.startsWith('.') && name !== '..' && name !== '.') {
+      return 'risk-info';
+    }
+
+    // Info: 世界可写文件 (不含目录)
+    if (file.file_type === 'file' && (lowBits & 0o002)) {
+      return 'risk-info';
+    }
+
+    return '';
+  }
+
+  /** 风险列徽章 */
+  private riskBadgeHtml(riskClass: string): string {
+    if (riskClass === 'risk-critical') return '<span class="sftp-risk-tag high">可疑</span>';
+    if (riskClass === 'risk-warning') return '<span class="sftp-risk-tag warn">敏感</span>';
+    if (riskClass === 'risk-info') return '<span class="sftp-risk-tag info">隐藏</span>';
+    return '<span class="sftp-risk-none">-</span>';
+  }
+
+  /** 文件类型标签 */
+  private getFileTypeLabel(file: SftpFileInfo): string {
+    if (file.file_type === 'directory') return '文件夹';
+    if (file.file_type === 'symlink') return '链接';
+    const n = file.name.toLowerCase();
+    if (/\.pub$/.test(n)) return '公钥';
+    if (/\.(pem|key)$/.test(n) || /^id_(rsa|dsa|ecdsa|ed25519)$/.test(n)) return '私钥';
+    if (/\.(conf|cfg|ini|yaml|yml|toml)$/.test(n) || n === 'config') return '配置';
+    if (/\.log$/.test(n)) return '日志';
+    if (/\.(sh|bash|zsh|py|pl|rb|js|ts|php)$/.test(n)) return '脚本';
+    return '文件';
+  }
+
+  /**
+   * 渲染面包屑导航 HTML
+   */
+  renderBreadcrumbHTML(): string {
+    const parts = this.currentPath.split('/').filter(Boolean);
+    let html = '<span class="breadcrumb-segment breadcrumb-root" onclick="sftpManager.navigateToPath(\'/\')" title="根目录">/</span>';
+    
+    let accumulated = '';
+    for (let i = 0; i < parts.length; i++) {
+      accumulated += '/' + parts[i];
+      const isLast = i === parts.length - 1;
+      html += '<span class="breadcrumb-sep">›</span>';
+      html += `<span class="breadcrumb-segment${isLast ? ' breadcrumb-current' : ''}" onclick="sftpManager.navigateToPath('${accumulated}')" title="${accumulated}">${parts[i]}</span>`;
+    }
+    return html;
+  }
+
+  /**
+   * 更新排序指示器
+   */
+  updateSortIndicators(): void {
+    const indicators: Record<string, string> = { name: '', size: '', modified: '' };
+    const [field, direction] = this.sortMode.split('-');
+    if (field && indicators.hasOwnProperty(field)) {
+      indicators[field] = direction === 'asc' ? '▲' : '▼';
+    }
+
+    // Update indicator text and active state
+    for (const [key, arrow] of Object.entries(indicators)) {
+      const ind = document.getElementById(`sort-ind-${key}`);
+      const th = document.getElementById(`sftp-th-${key}`);
+      if (ind) ind.textContent = arrow;
+      if (th) {
+        if (arrow) th.classList.add('sort-active');
+        else th.classList.remove('sort-active');
+      }
     }
   }
 
@@ -203,7 +367,7 @@ export class SftpManager {
     if (!sshConnectionManager.isConnected()) {
       return `
         <tr>
-          <td colspan="4" style="padding: 40px; text-align: center; color: var(--text-secondary); font-size: 13px;">
+          <td colspan="8" style="padding: 40px; text-align: center; color: var(--text-secondary); font-size: 13px;">
             <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
               <div style="font-size: 24px; opacity: 0.5;">📡</div>
               <span>SSH未连接 — 请先建立连接</span>
@@ -217,7 +381,7 @@ export class SftpManager {
     if (this.fileList.length === 0) {
       return `
         <tr>
-          <td colspan="4" style="padding: 40px; text-align: center; color: var(--text-secondary); font-size: 13px;">
+          <td colspan="8" style="padding: 40px; text-align: center; color: var(--text-secondary); font-size: 13px;">
             <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
               <div style="font-size: 24px; opacity: 0.5;">📁</div>
               <span>目录为空</span>
@@ -228,18 +392,23 @@ export class SftpManager {
     }
 
     let html = '';
+    let riskCount = 0;
 
     // 上级目录项
     if (this.currentPath !== '/') {
       html += `
         <tr class="sftp-file-row parent-dir-item" data-action="parent" oncontextmenu="return false;" onclick="sftpManager.navigateToParent()">
+          <td class="sftp-td-check"></td>
           <td class="file-icon-cell">
             <div class="file-icon">📁</div>
             <span class="file-name">..</span>
           </td>
-          <td>-</td>
-          <td>-</td>
-          <td>上级目录</td>
+          <td class="sftp-td-type">-</td>
+          <td class="sftp-td-size">-</td>
+          <td class="perms-cell">-</td>
+          <td class="owner-cell">-</td>
+          <td class="sftp-td-time">上级目录</td>
+          <td class="sftp-td-risk">-</td>
         </tr>
       `;
     }
@@ -251,32 +420,77 @@ export class SftpManager {
       const sizeText = file.file_type === 'directory' ? '-' : this.formatFileSize(file.size);
       const perms = this.formatPermissionsSymbolic(file.permissions);
       const modified = this.formatModifiedDate((file as any).modified);
+      const ownerName = this.resolveOwnerName(file.owner);
+      const groupName = this.resolveGroupName(file.group);
+      const ownerDisplay = groupName !== '-' ? `${ownerName}:${groupName}` : ownerName;
 
-      // Animation delay for staggered fade-in
+      // Risk detection
+      const riskClass = this.getFileRiskClass(file);
+      const typeLabel = this.getFileTypeLabel(file);
+      const riskTag = this.riskBadgeHtml(riskClass);
+      if (riskClass === 'risk-critical' || riskClass === 'risk-warning') riskCount++;
+
+      // Root owner highlight
+      const ownerClass = ownerName === 'root' ? 'owner-root' : '';
+
       const style = `--row-index: ${index}`;
 
       html += `
-        <tr class="sftp-file-row" data-file-index="${index}" 
-            oncontextmenu="window.showSftpContextMenu(event, ${index}); return false;" 
+        <tr class="sftp-file-row ${riskClass}" data-file-index="${index}"
+            oncontextmenu="window.showSftpContextMenu(event, ${index}); return false;"
+            onclick="window.openSftpDetail && window.openSftpDetail(${index})"
             ondblclick="sftpManager.handleFileClickByIndex(${index})"
             style="${style}">
+          <td class="sftp-td-check"><input type="checkbox" class="sftp-row-check" onclick="event.stopPropagation()"></td>
           <td class="file-icon-cell">
             <div class="file-icon">${icon}</div>
             <span class="file-name" title="${file.name}">${file.name}</span>
           </td>
-          <td style="font-size: 12px; color: var(--text-secondary);">${sizeText}</td>
-          <td style="font-family: monospace; font-size: 11px; color: var(--text-secondary);">${perms}</td>
-          <td style="font-size: 12px; color: var(--text-secondary);">${modified}</td>
+          <td class="sftp-td-type">${typeLabel}</td>
+          <td class="sftp-td-size">${sizeText}</td>
+          <td class="perms-cell">${perms}</td>
+          <td class="owner-cell ${ownerClass}">${ownerDisplay}</td>
+          <td class="sftp-td-time">${modified}</td>
+          <td class="sftp-td-risk">${riskTag}</td>
         </tr>
       `;
     });
 
-    // Update status bar count if element exists
+    // Update status bar
     setTimeout(() => {
       const countEl = document.getElementById('sftp-status-count');
-      if (countEl) {
-        countEl.innerHTML = `<span>${sortedFiles.length} 项</span>`;
+      if (countEl) countEl.innerHTML = `<span>${sortedFiles.length} 项</span>`;
+
+      // Update risk count
+      const riskEl = document.getElementById('sftp-status-risk');
+      const riskCountEl = document.getElementById('sftp-risk-count');
+      if (riskEl && riskCountEl) {
+        if (riskCount > 0) {
+          riskEl.style.display = '';
+          riskCountEl.textContent = String(riskCount);
+        } else {
+          riskEl.style.display = 'none';
+        }
       }
+
+      // Update breadcrumb
+      const breadcrumb = document.getElementById('sftp-breadcrumb');
+      if (breadcrumb) breadcrumb.innerHTML = this.renderBreadcrumbHTML();
+
+      // Update path in status bar
+      const pathEl = document.getElementById('sftp-status-path');
+      if (pathEl) pathEl.innerHTML = `<span>${this.currentPath}</span>`;
+
+      // 敏感目录审计横幅：在敏感目录（或其子目录）时显示
+      const banner = document.getElementById('sftp-audit-banner');
+      if (banner) {
+        const sens = ['/root/.ssh', '/etc/cron.d', '/var/spool/cron', '/etc/init.d', '/dev/shm', '/tmp', '/var/tmp', '/run'];
+        const inSens = sens.some(d => this.currentPath === d || this.currentPath.startsWith(d + '/'));
+        banner.style.display = inSens ? '' : 'none';
+      }
+
+      // Update sort indicators
+      this.updateSortIndicators();
     }, 0);
 
     return html;
@@ -291,7 +505,6 @@ export class SftpManager {
         const file = this.fileList[index];
         console.log('🖱️ 点击文件:', file.name, '类型:', file.file_type);
 
-        // 防止重复点击
         if (this.isNavigating) {
           console.log('⏳ 正在导航中，忽略点击');
           return;
@@ -313,15 +526,38 @@ export class SftpManager {
   private isNavigating: boolean = false;
 
   /**
-   * 获取文件图标
+   * 获取文件图标 (增强版，更多文件类型)
    */
-
   private getFileIcon(file: SftpFileInfo): string {
     if (file.file_type === 'directory') return '📁';
-    if (file.name.endsWith('.sh')) return '🐧';
-    if (file.name.endsWith('.txt') || file.name.endsWith('.log')) return '📄';
-    if (file.name.endsWith('.zip') || file.name.endsWith('.tar')) return '📦';
-    if (file.name.endsWith('.jpg') || file.name.endsWith('.png')) return '🖼️';
+    if (file.file_type === 'symlink') return '🔗';
+
+    const name = file.name.toLowerCase();
+    // Executables & scripts
+    if (name.endsWith('.sh') || name.endsWith('.bash')) return '🐧';
+    if (name.endsWith('.py')) return '🐍';
+    if (name.endsWith('.rb')) return '💎';
+    if (name.endsWith('.pl') || name.endsWith('.pm')) return '🐪';
+    if (name.endsWith('.js') || name.endsWith('.ts')) return '📜';
+    // Web & config
+    if (name.endsWith('.php') || name.endsWith('.jsp') || name.endsWith('.asp')) return '🌐';
+    if (name.endsWith('.html') || name.endsWith('.htm')) return '🌐';
+    if (name.endsWith('.conf') || name.endsWith('.cfg') || name.endsWith('.ini') || name.endsWith('.yaml') || name.endsWith('.yml') || name.endsWith('.toml')) return '⚙️';
+    if (name.endsWith('.json') || name.endsWith('.xml')) return '📋';
+    // Logs & text
+    if (name.endsWith('.log')) return '📊';
+    if (name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.rst')) return '📄';
+    // Archives
+    if (name.endsWith('.zip') || name.endsWith('.tar') || name.endsWith('.gz') || name.endsWith('.bz2') || name.endsWith('.xz') || name.endsWith('.7z') || name.endsWith('.rar')) return '📦';
+    // Images
+    if (name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') || name.endsWith('.gif') || name.endsWith('.svg') || name.endsWith('.bmp')) return '🖼️';
+    // Binaries & system
+    if (name.endsWith('.so') || name.endsWith('.ko') || name.endsWith('.o') || name.endsWith('.a')) return '🔧';
+    if (name.endsWith('.deb') || name.endsWith('.rpm')) return '📦';
+    // Crypto & keys
+    if (name.endsWith('.pem') || name.endsWith('.key') || name.endsWith('.crt') || name.endsWith('.pub') || name === 'authorized_keys' || name === 'known_hosts') return '🔑';
+    // Database
+    if (name.endsWith('.db') || name.endsWith('.sqlite') || name.endsWith('.sql')) return '🗄️';
     return '📄';
   }
 
@@ -343,7 +579,6 @@ export class SftpManager {
     if (input === undefined || input === null || input === '') return '';
     let date: Date;
     if (typeof input === 'number') {
-      // 既支持秒也支持毫秒（阈值：10^12）
       const ms = input < 1e12 ? input * 1000 : input;
       date = new Date(ms);
     } else if (typeof input === 'string') {

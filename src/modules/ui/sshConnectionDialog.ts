@@ -239,8 +239,6 @@ export class SSHConnectionDialog {
     const port = parseInt((document.getElementById('ssh-port') as HTMLInputElement)?.value);
     const username = (document.getElementById('ssh-username') as HTMLInputElement)?.value;
     const password = (document.getElementById('ssh-password') as HTMLInputElement)?.value;
-    const useSudo = (document.getElementById('ssh-use-sudo') as HTMLInputElement)?.checked || false;
-    const sudoPassword = (document.getElementById('ssh-sudo-password') as HTMLInputElement)?.value || undefined;
 
     if (!host || !username || !password) {
       (window as any).showConnectionStatus('请填写完整的连接信息', 'error');
@@ -248,8 +246,8 @@ export class SSHConnectionDialog {
     }
 
     try {
-      // 使用SSH连接管理器进行连接,传递useSudo参数和sudo密码
-      await sshConnectionManager.connect(host, port, username, password, useSudo, sudoPassword);
+      // 使用SSH连接管理器进行密码认证连接
+      await sshConnectionManager.connect(host, port, username, password, 'password');
       
       // 连接成功，关闭对话框
       this.hide();
