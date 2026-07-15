@@ -19,7 +19,6 @@ import { sshConnectionManager } from '../remote/sshConnectionManager';
 import { showConfirm } from '../ui/confirmDialog';
 import { KubernetesEmergencyManager } from '../kubernetes/kubernetesEmergencyManager';
 import { KubernetesSecurityAuditor } from '../kubernetes/kubernetesSecurityAuditor';
-import { databasePageManager } from '../database/databasePageManager';
 
 export interface ServerInfo {
   name: string;
@@ -115,51 +114,8 @@ export class LovelyResApp {
       this.bindEvents();
 
       // 监听状态变化
-      this.stateManager.addListener((newState) => {
-        // 1. 处理数据库页面初始化（当从 Loading 恢复或切换页面时）
-        // 如果容器存在但为空（说明可能刚被 Renderer 重置），则初始化
-        if (newState.currentPage === 'database' && !newState.loading) {
-            requestAnimationFrame(() => {
-                const container = document.getElementById('database-page-container');
-                if (container && container.innerHTML.trim() === '') {
-                    console.log('🔄 检测到数据库容器为空，重新初始化...');
-                    databasePageManager.initialize('database-page-container').then(() => {
-                        // 初始化后立即同步会话
-                        const status = sshConnectionManager.getConnectionStatus();
-                        if (status?.sessionId) {
-                            databasePageManager.setSession(status.sessionId);
-                        }
-                    });
-                }
-            });
-        }
-
-        // 2. 确保数据库管理器使用当前活动的 SSH 会话
-        // 当连接状态变化或服务器信息更新时
-        if (newState.isConnected && newState.serverInfo) {
-          // 优先从 sshConnectionManager 获取真实的后端 sessionId
-          const status = sshConnectionManager.getConnectionStatus();
-          const sessionId = status?.sessionId;
-          
-          if (newState.currentPage === 'database' && sessionId) {
-            databasePageManager.setSession(sessionId).catch((err: any) => {
-              console.error('❌ [App] 同步数据库会话失败:', err);
-            });
-          }
-        }
-      });
-
-      // 3. 监听 SSH 连接管理器变化（处理多会话切换）
-      // StateManager 可能不会在会话切换时立即触发足够的信息变更，直接监听连接管理器更可靠
-      sshConnectionManager.addListener((status) => {
-        const currentState = this.stateManager.getState();
-        // 如果当前在数据库页面，且有有效的会话 ID
-        if (currentState.currentPage === 'database' && status?.sessionId) {
-             // setSession 内部有防抖，可以安全调用
-             databasePageManager.setSession(status.sessionId).catch((err: any) => {
-                 console.error('❌ [App] 响应会话切换失败:', err);
-             });
-        }
+      this.stateManager.addListener(() => {
+        // 状态变化监听逻辑（目前已移除已废弃的数据库会话同步逻辑）
       });
       
       console.log('✅ LovelyRes 应用初始化完成');
@@ -283,34 +239,6 @@ export class LovelyResApp {
         console.log('⚙️ 检测到进入设置页面，触发初始化...');
         this.settingsPageManager.initialize();
       }
-
-      // 如果当前是数据库页面，初始化数据库页面管理器
-      if (this.stateManager.getState().currentPage === 'database') {
-        console.log('🗄️ 检测到进入数据库页面，触发初始化...');
-        // 等待下一帧以确保 DOM 已渲染
-        requestAnimationFrame(async () => {
-            const container = document.getElementById('database-page-container');
-            if (container) {
-                await databasePageManager.initialize('database-page-container');
-                
-                // 如果有活跃的 SSH 连接，自动设置会话
-                // 优先从 sshConnectionManager 获取真实的后端 sessionId
-                const status = sshConnectionManager.getConnectionStatus();
-                const session_id = status?.sessionId;
-                
-                console.log('🗄️ 数据库页面初始化：检查活跃连接', { 
-                    sessionId: session_id,
-                    connected: sshConnectionManager.isConnected()
-                });
-
-                if (session_id) {
-                    await databasePageManager.setSession(session_id);
-                } else {
-                    console.log('⚠️ 数据库页面初始化：无活跃连接');
-                }
-            }
-        });
-      }
     }
   }
 
@@ -328,6 +256,11 @@ export class LovelyResApp {
     }
     // 局部更新：替换整个 workspace 元素（renderMainWorkspace 返回含 wrapper 的完整 HTML）
     workspace.outerHTML = this.modernUIRenderer.renderMainWorkspace();
+
+    // 重新渲染多会话 Tab
+    if ((window as any).sessionTabsRenderer) {
+      (window as any).sessionTabsRenderer.refresh();
+    }
 
     // 同步更新侧边栏 active 状态
     const currentPage = this.stateManager.getState().currentPage;

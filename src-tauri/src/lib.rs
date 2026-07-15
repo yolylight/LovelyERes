@@ -38,11 +38,10 @@ pub mod packet_capture;
 pub mod settings;
 pub mod ssh_connection_manager;
 pub mod ssh_manager_russh;  // 使用 russh 实现的 SSH 管理器
+pub mod types;
 pub mod window_manager;
 
-// 数据库管理模块
-pub mod database_types;
-pub mod database_manager;
+// 数据库管理模块（统一使用 db_manager + commands::db_commands）
 pub mod commands;
 pub mod ai_proxy;
 pub mod db_manager;
@@ -120,6 +119,9 @@ pub fn run() {
             commands::ssh_commands::ssh_connect_direct,
             commands::ssh_commands::ssh_test_connection,
             commands::ssh_commands::ssh_disconnect_direct,
+            commands::ssh_commands::ssh_set_current_session,
+            commands::ssh_commands::ssh_update_session_sudo_password_direct,
+            commands::ssh_commands::ssh_update_session_sudo_config_direct,
             commands::ssh_commands::ssh_execute_command_direct,
             commands::ssh_commands::ssh_execute_dashboard_command_direct,
             commands::ssh_commands::ssh_execute_batch_commands,
@@ -229,22 +231,12 @@ pub fn run() {
             commands::db_commands::db_service_control,
             commands::db_commands::db_backup,
             commands::db_commands::db_get_stats,
-            // 数据库管理 (本地特有自定义指令)
-            database_manager::db_detect_environment,
-            database_manager::db_test_connection,
-            database_manager::db_execute_query,
-            database_manager::db_save_connections,
-            database_manager::db_load_connections,
-            database_manager::db_encrypt_password,
-            database_manager::db_decrypt_password,
-            database_manager::db_run_security_audit,
-            database_manager::db_list_databases,
-            database_manager::db_list_tables,
-            database_manager::db_describe_table,
-            database_manager::db_select_rows,
-            database_manager::db_update_row,
-            database_manager::db_delete_row,
-            database_manager::db_insert_row,
+            commands::db_commands::db_describe_table,
+            commands::db_commands::db_select_rows,
+            commands::db_commands::db_update_row,
+            commands::db_commands::db_delete_row,
+            commands::db_commands::db_insert_row,
+            commands::db_commands::db_security_audit,
             // 设备信息
             device_info::get_device_uuid,
             // Web 终端

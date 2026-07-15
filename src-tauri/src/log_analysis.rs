@@ -1,12 +1,12 @@
-// 日志分析模块 鈥?搴旀€ュ搷搴斿寮虹増
-// 鏀寔锛氬▉鑳佸垎鏋愩€両P/鐢ㄦ埛鎻愬彇銆乤uditd 瑙ｆ瀽銆佸鏃ュ織鍏宠仈銆両OC 鎼滅储
+// 日志分析模块 — 应急响应增强版
+// 支持：威胁分析、IP/用户提取、auditd 解析、多日志关联、IOC 搜索
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ==================== 数据结构 ====================
 
-/// 鏃ュ織鏉＄洰
+/// 日志条目
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub timestamp: String,
@@ -30,17 +30,18 @@ pub struct LogFileInfo {
     pub readable: bool,
 }
 
-/// IP 缁熻
+/// IP 统计
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpCount {
     pub ip: String,
     pub count: usize,
     pub last_seen: String,
-    /// 鍏宠仈鐨勫姩浣滅被鍨? failed_login, accepted_login, sudo, other
+    /// 关联的动作类型: failed_login, accepted_login, sudo, other
     pub action_type: String,
 }
 
-/// 鐢ㄦ埛鍚嶇粺璁?#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 用户名统计
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserCount {
     pub username: String,
     pub count: usize,
@@ -57,23 +58,25 @@ pub struct ThreatSummary {
     pub suspicious_activity_count: usize,
     pub top_source_ips: Vec<IpCount>,
     pub top_target_users: Vec<UserCount>,
-    /// 24 灏忔椂鍒嗗竷 (绱㈠紩 0-23)
+    /// 24 小时分布 (索引 0-23)
     pub hourly_distribution: Vec<usize>,
     /// critical / high / medium / low / none
     pub threat_level: String,
 }
 
-/// 鏃ュ織鍒嗘瀽缁撴灉锛堝寮虹増锛?#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 日志分析结果（增强版）
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogAnalysisResult {
     pub entries: Vec<LogEntry>,
     pub total_count: usize,
     pub highlighted_count: usize,
     pub file_info: Option<LogFileInfo>,
-    /// 濞佽儊鍒嗘瀽鎽樿锛堜粎鍦ㄨ姹傚垎鏋愭椂濉厖锛?    #[serde(skip_serializing_if = "Option::is_none")]
+    /// 威胁分析摘要（仅在请求分析时填充）
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub threat_summary: Option<ThreatSummary>,
 }
 
-/// IOC 鎼滅储缁撴灉
+/// IOC 搜索结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IocSearchResult {
     pub results: Vec<IocMatch>,
@@ -88,7 +91,8 @@ pub struct IocMatch {
     pub sample_lines: Vec<String>,
 }
 
-/// 澶氭棩蹇楀叧鑱旂粨鏋?#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 多日志关联结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiLogResult {
     pub entries: Vec<LogEntry>,
     pub total_count: usize,
@@ -128,7 +132,8 @@ pub const HIGHLIGHT_KEYWORDS: &[&str] = &[
     "reverse mapping", "COMMAND=",
 ];
 
-/// 鐢ㄤ簬搴旀€ュ搷搴旂殑楂樺嵄鍏抽敭璇嶏紙鏉冮噸鏇撮珮锛?const SUSPICIOUS_KEYWORDS: &[&str] = &[
+/// 用于应急响应的高危关键词（权重更高）
+const SUSPICIOUS_KEYWORDS: &[&str] = &[
     "reverse shell", "nc -e", "ncat", "/dev/tcp", "/dev/udp",
     "base64", "eval", "wget http", "curl http",
     "chmod 777", "chmod +s", "setuid",
@@ -140,17 +145,18 @@ pub const HIGHLIGHT_KEYWORDS: &[&str] = &[
     ".ssh/authorized_keys",
 ];
 
-// ==================== 瑙ｆ瀽鍑芥暟 ====================
+// ==================== 解析函数 ====================
 
-/// 瑙ｆ瀽鏃ュ織琛岋紙澧炲己鐗?鈥?鏀寔 syslog / journalctl / auditd 鏍煎紡锛?pub fn parse_log_line(line: &str, keywords: &[&str]) -> LogEntry {
+/// 解析日志行（支持 syslog / journalctl / auditd 格式）
+pub fn parse_log_line(line: &str, keywords: &[&str]) -> LogEntry {
     let highlighted = keywords.iter().any(|kw| line.contains(kw));
 
-    // 浼樺厛灏濊瘯 auditd 鏍煎紡: type=XXX msg=audit(1234567890.123:456): ...
+    // 优先尝试 auditd 格式: type=XXX msg=audit(1234567890.123:456): ...
     if line.contains("type=") && line.contains("msg=audit(") {
         return parse_audit_line(line, highlighted);
     }
 
-    // syslog / journalctl 鏍煎紡
+    // syslog / journalctl 格式
     let fields: Vec<&str> = line.split_whitespace().collect();
 
     let timestamp = if fields.len() >= 3 {
@@ -186,7 +192,8 @@ pub const HIGHLIGHT_KEYWORDS: &[&str] = &[
     }
 }
 
-/// 瑙ｆ瀽 auditd 鏃ュ織琛?fn parse_audit_line(line: &str, highlighted: bool) -> LogEntry {
+/// 解析 auditd 日志行
+fn parse_audit_line(line: &str, highlighted: bool) -> LogEntry {
     // type=SYSCALL msg=audit(1709234567.123:456): arch=c000003e syscall=59 success=yes ...
     let audit_type = extract_field(line, "type=");
     let timestamp = extract_audit_timestamp(line);
@@ -241,7 +248,7 @@ fn extract_audit_timestamp(line: &str) -> String {
         if let Some(end) = rest.find(':') {
             if let Ok(epoch) = rest[..end].parse::<f64>() {
                 let secs = epoch as i64;
-                // 绠€鍗曟牸寮忓寲涓?YYYY-MM-DD HH:MM:SS
+                // 简单格式化为 YYYY-MM-DD HH:MM:SS
                 let dt = chrono::DateTime::from_timestamp(secs, 0);
                 if let Some(dt) = dt {
                     return dt.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -270,7 +277,8 @@ fn detect_level(line: &str) -> String {
 
 // ==================== 威胁分析 ====================
 
-/// 瀵瑰凡瑙ｆ瀽鐨勬棩蹇楁潯鐩繘琛屽▉鑳佸垎鏋?pub fn analyze_threats(entries: &[LogEntry]) -> ThreatSummary {
+/// 对已解析的日志条目进行威胁分析
+pub fn analyze_threats(entries: &[LogEntry]) -> ThreatSummary {
     let mut brute_force = 0usize;
     let mut success_login = 0usize;
     let mut priv_esc = 0usize;
@@ -318,7 +326,7 @@ fn detect_level(line: &str) -> String {
             priv_esc += 1;
         }
 
-        // 鍙枒娲诲姩
+        // 可疑活动
         for kw in SUSPICIOUS_KEYWORDS {
             if raw.contains(kw) {
                 suspicious += 1;
@@ -326,7 +334,7 @@ fn detect_level(line: &str) -> String {
             }
         }
 
-        // 灏忔椂鍒嗗竷
+        // 小时分布
         if let Some(hour) = extract_hour(&entry.timestamp) {
             if hour < 24 {
                 hourly[hour] += 1;
@@ -341,7 +349,7 @@ fn detect_level(line: &str) -> String {
     top_ips.sort_by(|a, b| b.count.cmp(&a.count));
     top_ips.truncate(20);
 
-    // Top 20 鐢ㄦ埛
+    // Top 20 用户
     let mut top_users: Vec<UserCount> = user_map.into_iter()
         .map(|(username, (success, fail))| UserCount {
             count: success + fail,
@@ -376,9 +384,9 @@ fn detect_level(line: &str) -> String {
     }
 }
 
-/// 浠庢棩蹇楄涓彁鍙?IP 地址
+/// 从日志行中提取 IP 地址
 fn extract_ip(line: &str) -> Option<String> {
-    // 鍖归厤 "from X.X.X.X" 鎴?"rhost=X.X.X.X" 鎴?"SRC=X.X.X.X"
+    // 匹配 "from X.X.X.X" 或 "rhost=X.X.X.X" 或 "SRC=X.X.X.X"
     let patterns = ["from ", "rhost=", "SRC=", "src=", "addr="];
     for pat in &patterns {
         if let Some(pos) = line.find(pat) {
@@ -389,7 +397,7 @@ fn extract_ip(line: &str) -> Option<String> {
             }
         }
     }
-    // 闄嶇骇锛氭壘浠绘剰 IP 妯″紡
+    // 降级：找任意 IP 模式
     for word in line.split_whitespace() {
         let clean = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
         if is_valid_ip(clean) && clean != "127.0.0.1" && clean != "0.0.0.0" {
@@ -405,7 +413,7 @@ fn is_valid_ip(s: &str) -> bool {
     parts.iter().all(|p| p.parse::<u8>().is_ok())
 }
 
-/// 浠庢棩蹇楄涓彁鍙栫洰鏍囩敤鎴峰悕
+/// 从日志行中提取目标用户名
 fn extract_target_user(line: &str) -> Option<String> {
     // "for <user> from" / "user=<user>" / "Invalid user <user>"
     let patterns = [
@@ -432,8 +440,9 @@ fn extract_target_user(line: &str) -> Option<String> {
     None
 }
 
-/// 浠庢椂闂存埑涓彁鍙栧皬鏃?fn extract_hour(timestamp: &str) -> Option<usize> {
-    // "Nov 22 19:43:01" 鈫?19  鎴? "2024-01-15 19:43:01" 鈫?19
+/// 从时间戳中提取小时
+fn extract_hour(timestamp: &str) -> Option<usize> {
+    // "Nov 22 19:43:01" → 19  或 "2024-01-15 19:43:01" → 19
     for part in timestamp.split_whitespace() {
         if part.contains(':') {
             if let Some(hour_str) = part.split(':').next() {
@@ -542,18 +551,20 @@ pub fn generate_journalctl_command(page: usize, page_size: usize, unit: Option<&
     cmd
 }
 
-/// 生成威胁分析命令 鈥?璇诲彇鏇村琛岀敤浜庣粺璁★紙鏈€杩?2000 琛岋級
+/// 生成威胁分析命令 — 读取更多行用于统计（最近 2000 行）
 pub fn generate_threat_analysis_command(log_path: &str) -> String {
     format!("tail -n 2000 {} 2>/dev/null || echo ''", log_path)
 }
 
-/// 鐢熸垚澶氭棩蹇楀叧鑱旇鍙栧懡浠?pub fn generate_multi_log_command(log_paths: &[String], line_limit: usize) -> Vec<String> {
+/// 生成多日志关联读取命令
+pub fn generate_multi_log_command(log_paths: &[String], line_limit: usize) -> Vec<String> {
     log_paths.iter().map(|path| {
         format!("tail -n {} {} 2>/dev/null || echo ''", line_limit, path)
     }).collect()
 }
 
-/// 鐢熸垚 IOC 搜索命令（对每个 indicator 在每个日志文件中 grep锛?pub fn generate_ioc_search_command(indicator: &str, log_path: &str) -> String {
+/// 生成 IOC 搜索命令（对每个 indicator 在每个日志文件中 grep）
+pub fn generate_ioc_search_command(indicator: &str, log_path: &str) -> String {
     format!(
         "grep -c '{}' {} 2>/dev/null || echo '0'; grep -m 3 '{}' {} 2>/dev/null || true",
         indicator, log_path, indicator, log_path

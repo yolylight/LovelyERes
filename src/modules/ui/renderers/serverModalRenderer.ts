@@ -100,7 +100,11 @@ export class ServerModalRenderer {
 
             <div class="sc-wfield" id="scw-auth-password">
               <label for="scw-password">密码</label>
-              <div class="sc-input-eye">
+              <div id="scw-password-saved-wrapper" style="display: none; align-items: center; justify-content: space-between; border: 1px solid var(--border-color); padding: 4px 10px; border-radius: 4px; background: var(--bg-hover); margin-top: 4px;">
+                <span style="color: var(--text-secondary); font-size: 13px;">•••••••• (密码已保存)</span>
+                <button type="button" class="sc-mini-btn" style="margin: 0; padding: 2px 6px;" onclick="document.getElementById('scw-password-saved-wrapper').style.display='none'; document.getElementById('scw-password-input-wrapper').style.display='block'; (document.getElementById('scw-password') as HTMLInputElement).focus();">修改密码</button>
+              </div>
+              <div id="scw-password-input-wrapper" class="sc-input-eye">
                 <input id="scw-password" class="sc-underline" type="password" placeholder="请输入密码"
                        onkeydown="if(event.key==='Enter')window.scConnectForm?.()">
                 <button type="button" class="sc-eye" tabindex="-1" onclick="window.scwTogglePassword?.(this)">
@@ -122,6 +126,16 @@ export class ServerModalRenderer {
                 <label for="scw-keypass">密钥密码（可选）</label>
                 <input id="scw-keypass" class="sc-underline" type="password" placeholder="如果私钥有密码">
               </div>
+            </div>
+
+            <label class="sc-remember" style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+              <input type="checkbox" id="scw-use-sudo" onchange="window.scwToggleSudo?.(this.checked)">
+              <span>使用 sudo 提权</span>
+            </label>
+
+            <div class="sc-wfield" id="scw-sudo-password-wrapper" style="display:none; margin-bottom: 12px;">
+              <label for="scw-sudo-password">Sudo 密码（可选，留空同 SSH 密码）</label>
+              <input id="scw-sudo-password" class="sc-underline" type="password" placeholder="SSH 密码与 sudo 密码一致可不填">
             </div>
 
             <label class="sc-remember">
@@ -170,7 +184,7 @@ export class ServerModalRenderer {
   renderManageOverlay(): string {
     const cards = this.renderServerList();
     return `
-      <div class="sc-manage-overlay" id="sc-manage-overlay" onclick="if(event.target===this)window.scCloseManage?.()">
+      <div class="sc-manage-overlay" id="sc-manage-overlay">
         <div class="sc-manage-panel">
           <div class="sc-manage-head">
             <h3 class="sc-manage-title">连接管理</h3>
@@ -223,7 +237,7 @@ export class ServerModalRenderer {
     const authType = d.authType || 'password';
 
     return `
-      <div class="sc-form-overlay" id="sc-form-overlay" onclick="if(event.target===this)window.hideAddServerForm?.()">
+      <div class="sc-form-overlay" id="sc-form-overlay">
         <div class="sc-form-panel">
           <div class="sc-form-header">
             <h3 class="sc-form-title">${title}</h3>
@@ -241,13 +255,36 @@ export class ServerModalRenderer {
               <button class="sc-auth-option ${authType === 'key' ? 'active' : ''}" data-auth="key" onclick="window.scSetAuthType?.('key')">密钥认证</button>
             </div>
             <div id="sc-auth-password" style="${authType === 'key' ? 'display:none' : ''}">
-              <div class="sc-field"><label>密码</label><input id="sc-password" type="password" placeholder="SSH 密码"></div>
+              <div class="sc-field">
+                <label>密码</label>
+                ${d.encryptedPassword ? `
+                  <div class="password-saved-wrapper" id="sc-password-saved-wrapper" style="display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 4px; background: var(--bg-hover); margin-top: 4px;">
+                    <span style="color: var(--text-secondary); font-size: 13px;">•••••••• (密码已保存)</span>
+                    <button type="button" class="sc-mini-btn" style="margin: 0; padding: 2px 8px;" onclick="document.getElementById('sc-password-saved-wrapper').style.display='none'; document.getElementById('sc-password-input-wrapper').style.display='block'; (document.getElementById('sc-password') as HTMLInputElement).focus();">修改密码</button>
+                  </div>
+                  <div id="sc-password-input-wrapper" style="display: none;">
+                    <input id="sc-password" type="password" placeholder="请输入新密码">
+                  </div>
+                ` : `
+                  <div id="sc-password-input-wrapper">
+                    <input id="sc-password" type="password" placeholder="SSH 密码">
+                  </div>
+                `}
+              </div>
             </div>
             <div id="sc-auth-key" style="${authType === 'password' ? 'display:none' : ''}">
               <div class="sc-field"><label>私钥文件</label>
                 <div class="sc-file-row"><input id="sc-keypath" placeholder="选择私钥文件" value="${this.esc(d.keyPath || '')}" readonly><button class="sc-file-btn" onclick="window.selectPrivateKeyFile?.('sc-keypath')">选择</button></div>
               </div>
               <div class="sc-field"><label>密钥密码 (可选)</label><input id="sc-keypass" type="password" placeholder="如果私钥有密码"></div>
+            </div>
+            <label class="sc-remember" style="margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
+              <input type="checkbox" id="sc-use-sudo" ${d.useSudo ? 'checked' : ''} onchange="window.scToggleSudo?.(this.checked)">
+              <span>使用 sudo 提权</span>
+            </label>
+            <div class="sc-field" id="sc-sudo-password-wrapper" style="${d.useSudo ? '' : 'display:none;'}">
+              <label>Sudo 密码 (可选，留空同 SSH 密码)</label>
+              <input id="sc-sudo-password" type="password" placeholder="${d.encryptedSudoPassword ? '••••••••' : 'SSH 密码与 sudo 密码一致可不填'}">
             </div>
             <div class="sc-field"><label>备注 (可选)</label><input id="sc-notes" placeholder="连接备注" value="${this.esc(d.notes || '')}"></div>
           </div>

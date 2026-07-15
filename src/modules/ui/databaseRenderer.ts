@@ -423,6 +423,19 @@ export class DatabaseRenderer {
                 <input type="password" class="db-form-input" id="db-add-password" />
               </div>
             </div>
+            <div class="db-form-row">
+              <div class="db-form-group" style="flex:1">
+                <label class="db-form-label">连接模式</label>
+                <select class="db-form-input" id="db-add-mode">
+                  <option value="direct">直接连接</option>
+                  <option value="docker">Docker 容器</option>
+                </select>
+              </div>
+              <div class="db-form-group" style="flex:1; display:none" id="db-add-container-group">
+                <label class="db-form-label">容器名称/ID</label>
+                <input type="text" class="db-form-input" id="db-add-container" placeholder="如: my-mysql" />
+              </div>
+            </div>
             <div class="db-form-group">
               <label class="db-form-label">数据库名 <span style="color:var(--text-tertiary)">(可选)</span></label>
               <input type="text" class="db-form-input" id="db-add-database" placeholder="留空则连接默认数据库" />

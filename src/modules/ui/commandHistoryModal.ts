@@ -105,9 +105,7 @@ export class CommandHistoryModal {
   private bindEvents(): void {
     document.getElementById('cmd-history-close')?.addEventListener('click', () => this.hide());
     
-    this.modal?.addEventListener('click', (event) => {
-      if (event.target === this.modal) this.hide();
-    });
+
 
     document.addEventListener('keydown', (event) => {
       if (!this.isVisible) return;

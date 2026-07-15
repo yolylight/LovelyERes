@@ -13,6 +13,7 @@ import './sftpDetailPanel'; // 注册 SFTP 文件详情侧栏的 window 函数
 import { sftpManager } from '../remote/sftpManager';
 import { sshConnectionManager } from '../remote/sshConnectionManager';
 import { sshConnectionDialog } from '../ui/sshConnectionDialog';
+import { sessionTabsRenderer } from '../ui/sessionTabsRenderer';
 import { remoteOperationsManager } from '../remote/remoteOperationsManager';
 import { dockerPageManager } from '../docker/dockerPageManager';
 import { emergencyPageManager } from '../emergency/emergencyPageManager';
@@ -278,6 +279,10 @@ export function initGlobalFunctions(deps: GlobalFunctionsDeps): void {
   // quickDetection removed
   (window as any).sshConnectionDialog = sshConnectionDialog;
 
+  // 多标签页会话管理器（初始化 + 暴露到全局，供 app.ts 重绘后 refresh 使用）
+  sessionTabsRenderer.initialize();
+  (window as any).sessionTabsRenderer = sessionTabsRenderer;
+
   // (快速检测事件委托已移除)
   if (!globalEventsBound) {
     // 预留给其他全局事件
@@ -290,6 +295,10 @@ export function initGlobalFunctions(deps: GlobalFunctionsDeps): void {
         const mainWorkspace = document.querySelector('.main-workspace');
         if (mainWorkspace) {
           mainWorkspace.innerHTML = app.getStateManager().getUIRenderer().renderMainWorkspace();
+          // 在刷新主工作区之后，必须同步渲染/刷新多服务器标签页
+          if ((window as any).sessionTabsRenderer) {
+            (window as any).sessionTabsRenderer.refresh();
+          }
         }
       }
     } catch (error) {
@@ -489,8 +498,10 @@ export function initGlobalFunctions(deps: GlobalFunctionsDeps): void {
     if (!app || !renderer) return;
     const settingsHTML = renderer.renderSettingsPage();
     const settingsOverlay = document.createElement('div');
-    settingsOverlay.innerHTML = settingsHTML;
     settingsOverlay.id = 'settings-overlay-container';
+    settingsOverlay.style.position = 'fixed';
+    settingsOverlay.style.zIndex = '10000';
+    settingsOverlay.innerHTML = settingsHTML;
     document.body.appendChild(settingsOverlay);
     setTimeout(() => settingsPageManager.initialize(), 100);
   };

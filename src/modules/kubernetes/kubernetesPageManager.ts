@@ -363,10 +363,10 @@ export class KubernetesPageManager {
         modal.innerHTML = `
         <div style="background:var(--bg-secondary);border-radius:var(--border-radius-lg);border:1px solid var(--border-color);width:80%;max-width:900px;max-height:85vh;display:flex;flex-direction:column;box-shadow:var(--shadow-lg);">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:var(--spacing-md) var(--spacing-lg);border-bottom:1px solid var(--border-color);">
-                <h3 style="margin:0;font-size:16px;color:var(--text-primary);">Pod 日志 ��� ${podName}</h3>
+                <h3 style="margin:0;font-size:16px;color:var(--text-primary);">Pod 日志 — ${podName}</h3>
                 <button class="modern-btn secondary" onclick="this.closest('.modal-overlay').remove();" style="font-size:12px;">关闭</button>
             </div>
-            <div class="k8s-log-viewer" style="flex:1;overflow:auto;margin:var(--spacing-md);">${coloredLogs || '<span style="color:var(--text-secondary);">无日志输��</span>'}</div>
+            <div class="k8s-log-viewer" style="flex:1;overflow:auto;margin:var(--spacing-md);">${coloredLogs || '<span style="color:var(--text-secondary);">无日志输出</span>'}</div>
         </div>`;
         modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
         document.body.appendChild(modal);
@@ -535,7 +535,7 @@ export class KubernetesPageManager {
         try {
             const result = await this.manager.scaleDeployment(name, namespace, num);
             if (result.success) {
-                window.showNotification?.(`${name} 已缩放到 ${num} 副��`, 'success');
+                window.showNotification?.(`${name} 已缩放到 ${num} 副本`, 'success');
                 await this.refresh();
             } else {
                 window.showNotification?.(`缩放失败: ${result.output}`, 'error');

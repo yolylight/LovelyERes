@@ -635,6 +635,10 @@ export class ModernUIRenderer {
   renderMainWorkspace(): string {
     return `
       <div class="main-workspace">
+
+        <!-- 多服务器会话 Tab 列表 (多标签页支持) -->
+        <div id="session-tabs-container"></div>
+
         <!-- 工作区内容 -->
         <div class="workspace-content page-enter">
           ${this.renderWorkspaceContent()}
@@ -864,6 +868,10 @@ export class ModernUIRenderer {
 
   renderStepForm(editData?: any): string {
     return this.serverModalRenderer.renderStepForm(editData);
+  }
+
+  renderManageOverlay(): string {
+    return this.serverModalRenderer.renderManageOverlay();
   }
 
   /**
@@ -1291,7 +1299,7 @@ export class ModernUIRenderer {
             padding: 4px;
             border-radius: 4px;
             transition: all 0.2s;
-          " title="关闭设置">
+          " title="关闭设置" onclick="window.hideSettingsOverlay?.()">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
             </svg>

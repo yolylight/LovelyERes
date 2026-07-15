@@ -18,6 +18,23 @@ pub struct DatabaseInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ConnectionMode {
+    Direct,
+    #[serde(rename_all = "camelCase")]
+    Docker {
+        container_id: String,
+        container_name: String,
+    },
+}
+
+impl Default for ConnectionMode {
+    fn default() -> Self {
+        ConnectionMode::Direct
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConnection {
     pub db_type: String,
     pub host: String,
@@ -25,6 +42,8 @@ pub struct DbConnection {
     pub username: String,
     pub password: String,
     pub database: Option<String>,
+    #[serde(default)]
+    pub connection_mode: Option<ConnectionMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,12 +90,106 @@ pub struct DbStats {
     pub extra: HashMap<String, String>,
 }
 
+/// 分页查询结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub total_count: u64,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+/// 更新行参数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateRowParams {
+    pub database: String,
+    pub table: String,
+    pub updates: HashMap<String, Option<String>>,
+    pub conditions: HashMap<String, String>,
+}
+
+/// 删除行参数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteRowParams {
+    pub database: String,
+    pub table: String,
+    pub conditions: HashMap<String, String>,
+}
+
+/// 插入行参数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsertRowParams {
+    pub database: String,
+    pub table: String,
+    pub data: HashMap<String, Option<String>>,
+}
+
+/// 安全检查严重程度
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecuritySeverity {
+    Critical,
+    High,
+    Medium,
+    Low,
+    Info,
+}
+
+/// 安全检查状态
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckStatus {
+    Pass,
+    Fail,
+    Warning,
+    Error,
+}
+
+/// 安全检查发现项
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityFinding {
+    pub item: String,
+    pub detail: String,
+}
+
+/// 安全检查结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityCheckResult {
+    pub check_id: String,
+    pub check_name: String,
+    pub severity: SecuritySeverity,
+    pub status: CheckStatus,
+    pub findings: Vec<SecurityFinding>,
+    pub recommendation: String,
+}
+
 // ==================== Helpers ====================
 
 /// Shell-escape a password for safe embedding in single-quoted strings.
 /// Replaces `'` with `'\''` (end quote, escaped quote, start quote).
 fn shell_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
+}
+
+fn wrap_docker_exec(conn: &DbConnection, cmd: &str) -> String {
+    match &conn.connection_mode {
+        Some(ConnectionMode::Docker { container_id, .. }) => {
+            format!("docker exec -i {} sh -c \"{}\"", container_id, cmd.replace('"', "\\\""))
+        }
+        _ => cmd.to_string(),
+    }
+}
+
+fn wrap_docker_exec_batch(conn: &DbConnection, commands: &[String]) -> Vec<String> {
+    match &conn.connection_mode {
+        Some(ConnectionMode::Docker { container_id, .. }) => {
+            commands.iter().map(|cmd| {
+                format!("docker exec -i {} sh -c \"{}\"", container_id, cmd.replace('"', "\\\""))
+            }).collect()
+        }
+        _ => commands.to_vec(),
+    }
 }
 
 // ==================== detect_databases ====================
@@ -281,7 +394,7 @@ pub fn execute_sql(
         _ => return Err(format!("不支持的数据库类型: {}", db_type)),
     };
 
-    let output = ssh.execute_command(&cmd)?;
+    let output = ssh.execute_command(&wrap_docker_exec(conn, &cmd))?;
     let elapsed = start.elapsed().as_millis() as u64;
     let raw = output.output.trim().to_string();
 
@@ -751,26 +864,40 @@ pub fn backup_database(
 
     let cmd = match db_type {
         "mysql" => {
-            format!(
-                "mysqldump -u{user} -p'{pass}' -h{host} -P{port} {db} > /tmp/backup_{db}_{ts}.sql 2>&1 && echo 'OK:/tmp/backup_{db}_{ts}.sql'",
+            let base = format!(
+                "mysqldump -u{user} -p'{pass}' -h{host} -P{port} {db}",
                 user = conn.username,
                 pass = escaped_pass,
                 host = conn.host,
                 port = conn.port,
                 db = database,
-                ts = timestamp,
-            )
+            );
+            match &conn.connection_mode {
+                Some(ConnectionMode::Docker { container_id, .. }) => {
+                    format!("docker exec -i {} {} > /tmp/backup_{}_{}.sql 2>&1 && echo 'OK:/tmp/backup_{}_{}.sql'", container_id, base, database, timestamp, database, timestamp)
+                }
+                _ => {
+                    format!("{} > /tmp/backup_{}_{}.sql 2>&1 && echo 'OK:/tmp/backup_{}_{}.sql'", base, database, timestamp, database, timestamp)
+                }
+            }
         }
         "postgresql" => {
-            format!(
-                "PGPASSWORD='{pass}' pg_dump -U {user} -h {host} -p {port} {db} > /tmp/backup_{db}_{ts}.sql 2>&1 && echo 'OK:/tmp/backup_{db}_{ts}.sql'",
-                pass = escaped_pass,
+            let base = format!(
+                "pg_dump -U {user} -h {host} -p {port} {db}",
                 user = conn.username,
                 host = conn.host,
                 port = conn.port,
                 db = database,
-                ts = timestamp,
-            )
+            );
+            let pg_pass = format!("PGPASSWORD='{}'", escaped_pass);
+            match &conn.connection_mode {
+                Some(ConnectionMode::Docker { container_id, .. }) => {
+                    format!("docker exec -i -e {} {} {} > /tmp/backup_{}_{}.sql 2>&1 && echo 'OK:/tmp/backup_{}_{}.sql'", pg_pass, container_id, base, database, timestamp, database, timestamp)
+                }
+                _ => {
+                    format!("{} {} > /tmp/backup_{}_{}.sql 2>&1 && echo 'OK:/tmp/backup_{}_{}.sql'", pg_pass, base, database, timestamp, database, timestamp)
+                }
+            }
         }
         "redis" => {
             let auth = if conn.password.is_empty() {
@@ -778,12 +905,18 @@ pub fn backup_database(
             } else {
                 format!("-a '{}'", escaped_pass)
             };
-            format!(
+            let base = format!(
                 "redis-cli -h {host} -p {port} {auth} BGSAVE 2>&1",
                 host = conn.host,
                 port = conn.port,
                 auth = auth,
-            )
+            );
+            match &conn.connection_mode {
+                Some(ConnectionMode::Docker { container_id, .. }) => {
+                    format!("docker exec -i {} {}", container_id, base)
+                }
+                _ => base,
+            }
         }
         "mongodb" => {
             let auth = if conn.username.is_empty() {
@@ -791,14 +924,25 @@ pub fn backup_database(
             } else {
                 format!("-u {user} -p '{pass}' --authenticationDatabase admin", user = conn.username, pass = escaped_pass)
             };
-            format!(
-                "mongodump --host {host} --port {port} {auth} --db {db} --out /tmp/backup_{ts}/ 2>&1 && echo 'OK:/tmp/backup_{ts}/'",
+            let base = format!(
+                "mongodump --host {host} --port {port} {auth} --db {db} --out /tmp/backup_{ts}/",
                 host = conn.host,
                 port = conn.port,
                 auth = auth,
                 db = database,
                 ts = timestamp,
-            )
+            );
+            match &conn.connection_mode {
+                Some(ConnectionMode::Docker { container_id, .. }) => {
+                    format!(
+                        "docker exec -i {} {} 2>&1 && docker cp {}:/tmp/backup_{}/ /tmp/ && docker exec -i {} rm -rf /tmp/backup_{}/ && echo 'OK:/tmp/backup_{}/'",
+                        container_id, base, container_id, timestamp, container_id, timestamp, timestamp
+                    )
+                }
+                _ => {
+                    format!("{} 2>&1 && echo 'OK:/tmp/backup_{}/'", base, timestamp)
+                }
+            }
         }
         _ => return Err(format!("不支持的数据库类型: {}", db_type)),
     };
@@ -844,7 +988,7 @@ pub fn get_db_stats(
                 ),
             ];
 
-            let results = ssh.execute_batch_commands(&commands)?;
+            let results = ssh.execute_batch_commands(&wrap_docker_exec_batch(conn, &commands))?;
 
             let mut extra = HashMap::new();
             let mut uptime = String::new();
@@ -917,7 +1061,7 @@ pub fn get_db_stats(
                 ),
             ];
 
-            let results = ssh.execute_batch_commands(&commands)?;
+            let results = ssh.execute_batch_commands(&wrap_docker_exec_batch(conn, &commands))?;
 
             let get = |idx: usize| -> String {
                 match results.get(idx) {
@@ -1017,5 +1161,561 @@ pub fn get_db_stats(
             })
         }
         _ => Err(format!("不支持的数据库类型: {}", db_type)),
+    }
+}
+
+// ==================== 输入验证 ====================
+
+/// 验证标识符（仅允许字母、数字、下划线、连字符），防止命令注入
+fn validate_identifier(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("标识符不能为空".to_string());
+    }
+    for c in name.chars() {
+        if !c.is_ascii_alphanumeric() && c != '_' && c != '-' {
+            return Err(format!("检测到非法字符 '{}'，标识符仅允许字母、数字、下划线和连字符", c));
+        }
+    }
+    Ok(())
+}
+
+/// 转义 SQL 标识符（表名、列名）
+fn quote_identifier(name: &str, db_type: &str) -> String {
+    match db_type {
+        "mysql" => format!("`{}`", name.replace('`', "``")),
+        "postgresql" | "sqlite" => format!("\"{}\"" , name.replace('"', "\"\"")),
+        _ => name.to_string(),
+    }
+}
+
+// ==================== 表结构描述 ====================
+
+/// 获取表的列结构信息
+pub fn describe_table(
+    ssh: &SSHManagerRussh,
+    db_type: &str,
+    conn: &DbConnection,
+    database: &str,
+    table: &str,
+) -> Result<Vec<ColumnInfo>, String> {
+    validate_identifier(database)?;
+    validate_identifier(table)?;
+
+    match db_type {
+        "mysql" => {
+            let sql = format!("DESCRIBE {}", quote_identifier(table, db_type));
+            let conn_with_db = DbConnection {
+                database: Some(database.to_string()),
+                ..conn.clone()
+            };
+            let result = execute_sql(ssh, db_type, &conn_with_db, &sql)?;
+            // MySQL DESCRIBE 输出: Field, Type, Null, Key, Default, Extra
+            let columns = result.rows.iter().filter_map(|row| {
+                if row.len() >= 3 {
+                    Some(ColumnInfo {
+                        name: row[0].clone(),
+                        data_type: row[1].clone(),
+                        is_nullable: row.get(2).map(|s| s == "YES").unwrap_or(true),
+                        is_primary_key: row.get(3).map(|s| s == "PRI").unwrap_or(false),
+                        default_value: row.get(4).cloned().filter(|s| !s.is_empty() && s != "NULL"),
+                    })
+                } else {
+                    None
+                }
+            }).collect();
+            Ok(columns)
+        }
+        "postgresql" => {
+            let sql = format!(
+                "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position",
+                table.replace('\'', "''")
+            );
+            let conn_with_db = DbConnection {
+                database: Some(database.to_string()),
+                ..conn.clone()
+            };
+            let result = execute_sql(ssh, db_type, &conn_with_db, &sql)?;
+            // 查询主键信息
+            let pk_sql = format!(
+                "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '{}'::regclass AND i.indisprimary",
+                table.replace('\'', "''")
+            );
+            let pk_result = execute_sql(ssh, db_type, &conn_with_db, &pk_sql).unwrap_or(SqlResult {
+                columns: vec![], rows: vec![], row_count: 0, affected_rows: None, execution_time_ms: 0, error: None,
+            });
+            let pk_cols: Vec<String> = pk_result.rows.iter().filter_map(|r| r.first().cloned()).collect();
+
+            let columns = result.rows.iter().filter_map(|row| {
+                if row.len() >= 3 {
+                    Some(ColumnInfo {
+                        name: row[0].clone(),
+                        data_type: row[1].clone(),
+                        is_nullable: row[2] == "YES",
+                        is_primary_key: pk_cols.contains(&row[0]),
+                        default_value: row.get(3).cloned().filter(|s| !s.is_empty()),
+                    })
+                } else {
+                    None
+                }
+            }).collect();
+            Ok(columns)
+        }
+        _ => Err(format!("{} 暂不支持获取表结构", db_type)),
+    }
+}
+
+// ==================== 分页查询 ====================
+
+/// 分页查询表数据
+pub fn select_rows(
+    ssh: &SSHManagerRussh,
+    db_type: &str,
+    conn: &DbConnection,
+    database: &str,
+    table: &str,
+    page: u32,
+    page_size: u32,
+) -> Result<PaginatedResult, String> {
+    validate_identifier(database)?;
+    validate_identifier(table)?;
+
+    let offset = page * page_size;
+    let conn_with_db = DbConnection {
+        database: Some(database.to_string()),
+        ..conn.clone()
+    };
+    let quoted_table = quote_identifier(table, db_type);
+
+    match db_type {
+        "mysql" | "postgresql" => {
+            // 获取总行数
+            let count_sql = format!("SELECT COUNT(*) FROM {}", quoted_table);
+            let count_result = execute_sql(ssh, db_type, &conn_with_db, &count_sql)?;
+            let total_count: u64 = count_result.rows.first()
+                .and_then(|r| r.first())
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+
+            // 获取分页数据
+            let data_sql = format!(
+                "SELECT * FROM {} LIMIT {} OFFSET {}",
+                quoted_table, page_size, offset
+            );
+            let result = execute_sql(ssh, db_type, &conn_with_db, &data_sql)?;
+
+            Ok(PaginatedResult {
+                columns: result.columns,
+                rows: result.rows,
+                total_count,
+                page,
+                page_size,
+            })
+        }
+        _ => Err(format!("{} 暂不支持分页查询", db_type)),
+    }
+}
+
+// ==================== 行级 CRUD ====================
+
+/// 更新行
+pub fn update_row(
+    ssh: &SSHManagerRussh,
+    db_type: &str,
+    conn: &DbConnection,
+    params: &UpdateRowParams,
+) -> Result<SqlResult, String> {
+    validate_identifier(&params.database)?;
+    validate_identifier(&params.table)?;
+
+    match db_type {
+        "mysql" => {
+            let mut set_clauses = Vec::new();
+            for (col, val) in &params.updates {
+                validate_identifier(col)?;
+                let val_str = match val {
+                    Some(v) => format!("'{}'", v.replace('\'', "\\'")),
+                    None => "NULL".to_string(),
+                };
+                set_clauses.push(format!("{}={}", quote_identifier(col, db_type), val_str));
+            }
+
+            let mut where_clauses = Vec::new();
+            for (col, val) in &params.conditions {
+                validate_identifier(col)?;
+                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), val.replace('\'', "\\'")));
+            }
+
+            if set_clauses.is_empty() { return Err("没有要更新的字段".to_string()); }
+            if where_clauses.is_empty() { return Err("更新操作必须包含条件".to_string()); }
+
+            let sql = format!(
+                "UPDATE {}.{} SET {} WHERE {}",
+                quote_identifier(&params.database, db_type),
+                quote_identifier(&params.table, db_type),
+                set_clauses.join(", "),
+                where_clauses.join(" AND ")
+            );
+            let conn_with_db = DbConnection { database: Some(params.database.clone()), ..conn.clone() };
+            execute_sql(ssh, db_type, &conn_with_db, &sql)
+        }
+        "postgresql" => {
+            let mut set_clauses = Vec::new();
+            for (col, val) in &params.updates {
+                validate_identifier(col)?;
+                let val_str = match val {
+                    Some(v) => format!("'{}'", v.replace('\'', "''")),
+                    None => "NULL".to_string(),
+                };
+                set_clauses.push(format!("{}={}", quote_identifier(col, db_type), val_str));
+            }
+
+            let mut where_clauses = Vec::new();
+            for (col, val) in &params.conditions {
+                validate_identifier(col)?;
+                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), val.replace('\'', "''")));
+            }
+
+            if set_clauses.is_empty() { return Err("没有要更新的字段".to_string()); }
+            if where_clauses.is_empty() { return Err("更新操作必须包含条件".to_string()); }
+
+            let sql = format!(
+                "UPDATE {} SET {} WHERE {}",
+                quote_identifier(&params.table, db_type),
+                set_clauses.join(", "),
+                where_clauses.join(" AND ")
+            );
+            let conn_with_db = DbConnection { database: Some(params.database.clone()), ..conn.clone() };
+            execute_sql(ssh, db_type, &conn_with_db, &sql)
+        }
+        _ => Err(format!("{} 暂不支持更新操作", db_type)),
+    }
+}
+
+/// 删除行
+pub fn delete_row(
+    ssh: &SSHManagerRussh,
+    db_type: &str,
+    conn: &DbConnection,
+    params: &DeleteRowParams,
+) -> Result<SqlResult, String> {
+    validate_identifier(&params.database)?;
+    validate_identifier(&params.table)?;
+
+    match db_type {
+        "mysql" => {
+            let mut where_clauses = Vec::new();
+            for (col, val) in &params.conditions {
+                validate_identifier(col)?;
+                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), val.replace('\'', "\\'")));
+            }
+            if where_clauses.is_empty() { return Err("删除操作必须包含条件".to_string()); }
+
+            let sql = format!(
+                "DELETE FROM {}.{} WHERE {}",
+                quote_identifier(&params.database, db_type),
+                quote_identifier(&params.table, db_type),
+                where_clauses.join(" AND ")
+            );
+            let conn_with_db = DbConnection { database: Some(params.database.clone()), ..conn.clone() };
+            execute_sql(ssh, db_type, &conn_with_db, &sql)
+        }
+        "postgresql" => {
+            let mut where_clauses = Vec::new();
+            for (col, val) in &params.conditions {
+                validate_identifier(col)?;
+                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), val.replace('\'', "''")));
+            }
+            if where_clauses.is_empty() { return Err("删除操作必须包含条件".to_string()); }
+
+            let sql = format!(
+                "DELETE FROM {} WHERE {}",
+                quote_identifier(&params.table, db_type),
+                where_clauses.join(" AND ")
+            );
+            let conn_with_db = DbConnection { database: Some(params.database.clone()), ..conn.clone() };
+            execute_sql(ssh, db_type, &conn_with_db, &sql)
+        }
+        _ => Err(format!("{} 暂不支持删除操作", db_type)),
+    }
+}
+
+/// 插入行
+pub fn insert_row(
+    ssh: &SSHManagerRussh,
+    db_type: &str,
+    conn: &DbConnection,
+    params: &InsertRowParams,
+) -> Result<SqlResult, String> {
+    validate_identifier(&params.database)?;
+    validate_identifier(&params.table)?;
+
+    match db_type {
+        "mysql" => {
+            let mut columns = Vec::new();
+            let mut values = Vec::new();
+            for (col, val) in &params.data {
+                validate_identifier(col)?;
+                columns.push(quote_identifier(col, db_type));
+                match val {
+                    Some(v) => values.push(format!("'{}'", v.replace('\'', "\\'"  ))),
+                    None => values.push("NULL".to_string()),
+                }
+            }
+            if columns.is_empty() { return Err("插入数据不能为空".to_string()); }
+
+            let sql = format!(
+                "INSERT INTO {}.{} ({}) VALUES ({})",
+                quote_identifier(&params.database, db_type),
+                quote_identifier(&params.table, db_type),
+                columns.join(", "),
+                values.join(", ")
+            );
+            let conn_with_db = DbConnection { database: Some(params.database.clone()), ..conn.clone() };
+            execute_sql(ssh, db_type, &conn_with_db, &sql)
+        }
+        "postgresql" => {
+            let mut columns = Vec::new();
+            let mut values = Vec::new();
+            for (col, val) in &params.data {
+                validate_identifier(col)?;
+                columns.push(quote_identifier(col, db_type));
+                match val {
+                    Some(v) => values.push(format!("'{}'", v.replace('\'', "''"))),
+                    None => values.push("NULL".to_string()),
+                }
+            }
+            if columns.is_empty() { return Err("插入数据不能为空".to_string()); }
+
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                quote_identifier(&params.table, db_type),
+                columns.join(", "),
+                values.join(", ")
+            );
+            let conn_with_db = DbConnection { database: Some(params.database.clone()), ..conn.clone() };
+            execute_sql(ssh, db_type, &conn_with_db, &sql)
+        }
+        _ => Err(format!("{} 暂不支持插入操作", db_type)),
+    }
+}
+
+// ==================== 安全审计 ====================
+
+/// 运行数据库安全审计
+pub fn run_security_audit(
+    ssh: &SSHManagerRussh,
+    db_type: &str,
+    conn: &DbConnection,
+) -> Result<Vec<SecurityCheckResult>, String> {
+    let mut results = Vec::new();
+
+    match db_type {
+        "mysql" => {
+            results.push(check_mysql_empty_passwords(ssh, db_type, conn));
+            results.push(check_mysql_privileged_users(ssh, db_type, conn));
+            results.push(check_mysql_remote_root(ssh, db_type, conn));
+            results.push(check_mysql_anonymous_users(ssh, db_type, conn));
+        }
+        "postgresql" => {
+            results.push(check_postgres_superusers(ssh, db_type, conn));
+        }
+        "redis" => {
+            results.push(check_redis_password(ssh, conn));
+        }
+        _ => {
+            results.push(SecurityCheckResult {
+                check_id: "unsupported".to_string(),
+                check_name: "不支持的数据库类型".to_string(),
+                severity: SecuritySeverity::Info,
+                status: CheckStatus::Warning,
+                findings: vec![],
+                recommendation: format!("暂不支持 {} 的安全审计", db_type),
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+// ---- MySQL 安全检查 ----
+
+fn check_mysql_empty_passwords(ssh: &SSHManagerRussh, db_type: &str, conn: &DbConnection) -> SecurityCheckResult {
+    let sql = "SELECT Host, User FROM mysql.user WHERE authentication_string = '' OR authentication_string IS NULL";
+    match execute_sql(ssh, db_type, conn, sql) {
+        Ok(result) => {
+            let findings: Vec<SecurityFinding> = result.rows.iter().filter_map(|row| {
+                if row.len() >= 2 && !row[1].trim().is_empty() {
+                    Some(SecurityFinding {
+                        item: format!("{}@{}", row[1], row[0]),
+                        detail: format!("用户 {}@{} 无密码", row[1], row[0]),
+                    })
+                } else { None }
+            }).collect();
+            SecurityCheckResult {
+                check_id: "mysql_empty_passwords".to_string(),
+                check_name: "空口令用户检查".to_string(),
+                severity: if findings.is_empty() { SecuritySeverity::Info } else { SecuritySeverity::Critical },
+                status: if findings.is_empty() { CheckStatus::Pass } else { CheckStatus::Fail },
+                findings,
+                recommendation: "为所有用户设置强密码".to_string(),
+            }
+        }
+        Err(e) => SecurityCheckResult {
+            check_id: "mysql_empty_passwords".to_string(),
+            check_name: "空口令用户检查".to_string(),
+            severity: SecuritySeverity::Info,
+            status: CheckStatus::Error,
+            findings: vec![SecurityFinding { item: "error".to_string(), detail: e }],
+            recommendation: String::new(),
+        },
+    }
+}
+
+fn check_mysql_privileged_users(ssh: &SSHManagerRussh, db_type: &str, conn: &DbConnection) -> SecurityCheckResult {
+    let sql = "SELECT Host, User, Super_priv, Grant_priv FROM mysql.user WHERE Super_priv = 'Y' OR Grant_priv = 'Y'";
+    match execute_sql(ssh, db_type, conn, sql) {
+        Ok(result) => {
+            let findings: Vec<SecurityFinding> = result.rows.iter().filter_map(|row| {
+                if row.len() >= 4 {
+                    Some(SecurityFinding {
+                        item: format!("{}@{}", row[1], row[0]),
+                        detail: format!("SUPER: {}, GRANT: {}", row[2], row[3]),
+                    })
+                } else { None }
+            }).collect();
+            SecurityCheckResult {
+                check_id: "mysql_privileged_users".to_string(),
+                check_name: "高权限用户审计".to_string(),
+                severity: SecuritySeverity::High,
+                status: if findings.is_empty() { CheckStatus::Pass } else { CheckStatus::Warning },
+                findings,
+                recommendation: "最小化具有 SUPER 和 GRANT 权限的用户数量".to_string(),
+            }
+        }
+        Err(e) => SecurityCheckResult {
+            check_id: "mysql_privileged_users".to_string(),
+            check_name: "高权限用户审计".to_string(),
+            severity: SecuritySeverity::Info,
+            status: CheckStatus::Error,
+            findings: vec![SecurityFinding { item: "error".to_string(), detail: e }],
+            recommendation: String::new(),
+        },
+    }
+}
+
+fn check_mysql_remote_root(ssh: &SSHManagerRussh, db_type: &str, conn: &DbConnection) -> SecurityCheckResult {
+    let sql = "SELECT Host, User FROM mysql.user WHERE User = 'root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')";
+    match execute_sql(ssh, db_type, conn, sql) {
+        Ok(result) => {
+            let findings: Vec<SecurityFinding> = result.rows.iter().filter_map(|row| {
+                if row.len() >= 2 {
+                    Some(SecurityFinding {
+                        item: format!("root@{}", row[0]),
+                        detail: "允许远程 root 访问".to_string(),
+                    })
+                } else { None }
+            }).collect();
+            SecurityCheckResult {
+                check_id: "mysql_remote_root".to_string(),
+                check_name: "远程 Root 访问检查".to_string(),
+                severity: if findings.is_empty() { SecuritySeverity::Info } else { SecuritySeverity::Critical },
+                status: if findings.is_empty() { CheckStatus::Pass } else { CheckStatus::Fail },
+                findings,
+                recommendation: "禁止 root 用户远程访问".to_string(),
+            }
+        }
+        Err(e) => SecurityCheckResult {
+            check_id: "mysql_remote_root".to_string(),
+            check_name: "远程 Root 访问检查".to_string(),
+            severity: SecuritySeverity::Info,
+            status: CheckStatus::Error,
+            findings: vec![SecurityFinding { item: "error".to_string(), detail: e }],
+            recommendation: String::new(),
+        },
+    }
+}
+
+fn check_mysql_anonymous_users(ssh: &SSHManagerRussh, db_type: &str, conn: &DbConnection) -> SecurityCheckResult {
+    let sql = "SELECT Host, User FROM mysql.user WHERE User = ''";
+    match execute_sql(ssh, db_type, conn, sql) {
+        Ok(result) => {
+            let findings: Vec<SecurityFinding> = result.rows.iter().filter_map(|row| {
+                if row.len() >= 1 {
+                    Some(SecurityFinding {
+                        item: "匿名用户".to_string(),
+                        detail: row.join(" | "),
+                    })
+                } else { None }
+            }).collect();
+            SecurityCheckResult {
+                check_id: "mysql_anonymous_users".to_string(),
+                check_name: "匿名用户检查".to_string(),
+                severity: if findings.is_empty() { SecuritySeverity::Info } else { SecuritySeverity::High },
+                status: if findings.is_empty() { CheckStatus::Pass } else { CheckStatus::Fail },
+                findings,
+                recommendation: "删除匿名用户".to_string(),
+            }
+        }
+        Err(e) => SecurityCheckResult {
+            check_id: "mysql_anonymous_users".to_string(),
+            check_name: "匿名用户检查".to_string(),
+            severity: SecuritySeverity::Info,
+            status: CheckStatus::Error,
+            findings: vec![SecurityFinding { item: "error".to_string(), detail: e }],
+            recommendation: String::new(),
+        },
+    }
+}
+
+// ---- PostgreSQL 安全检查 ----
+
+fn check_postgres_superusers(ssh: &SSHManagerRussh, db_type: &str, conn: &DbConnection) -> SecurityCheckResult {
+    let sql = "SELECT usename FROM pg_user WHERE usesuper = true";
+    match execute_sql(ssh, db_type, conn, sql) {
+        Ok(result) => {
+            let findings: Vec<SecurityFinding> = result.rows.iter().filter_map(|row| {
+                row.first().map(|name| SecurityFinding {
+                    item: name.trim().to_string(),
+                    detail: "超级用户权限".to_string(),
+                })
+            }).collect();
+            SecurityCheckResult {
+                check_id: "pg_superusers".to_string(),
+                check_name: "超级用户审计".to_string(),
+                severity: SecuritySeverity::High,
+                status: if findings.len() <= 1 { CheckStatus::Pass } else { CheckStatus::Warning },
+                findings,
+                recommendation: "最小化超级用户数量，仅保留必要的管理员".to_string(),
+            }
+        }
+        Err(e) => SecurityCheckResult {
+            check_id: "pg_superusers".to_string(),
+            check_name: "超级用户审计".to_string(),
+            severity: SecuritySeverity::Info,
+            status: CheckStatus::Error,
+            findings: vec![SecurityFinding { item: "error".to_string(), detail: e }],
+            recommendation: String::new(),
+        },
+    }
+}
+
+// ---- Redis 安全检查 ----
+
+fn check_redis_password(_ssh: &SSHManagerRussh, conn: &DbConnection) -> SecurityCheckResult {
+    let has_password = !conn.password.is_empty();
+    SecurityCheckResult {
+        check_id: "redis_password".to_string(),
+        check_name: "Redis 密码检查".to_string(),
+        severity: if has_password { SecuritySeverity::Info } else { SecuritySeverity::Critical },
+        status: if has_password { CheckStatus::Pass } else { CheckStatus::Fail },
+        findings: if has_password {
+            vec![]
+        } else {
+            vec![SecurityFinding {
+                item: "redis".to_string(),
+                detail: "Redis 未设置密码，任何人可直接访问".to_string(),
+            }]
+        },
+        recommendation: "使用 requirepass 配置项设置强密码".to_string(),
     }
 }

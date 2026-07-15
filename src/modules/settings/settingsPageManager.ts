@@ -137,7 +137,7 @@ export class SettingsPageManager {
     document.querySelectorAll('.settings-tab').forEach(tab => {
       tab.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
-        const tabName = target.getAttribute('data-tab') as 'basic' | 'ai';
+        const tabName = target.getAttribute('data-tab') as 'basic' | 'ai' | 'tools';
         if (tabName) {
           this.switchTab(tabName);
         }
@@ -257,7 +257,7 @@ export class SettingsPageManager {
   /**
    * 切换标签页
    */
-  private switchTab(tabName: 'basic' | 'ai'): void {
+  private switchTab(tabName: 'basic' | 'ai' | 'tools'): void {
     // 更新标签页样式（直接操作内联样式）
     document.querySelectorAll('.settings-tab').forEach(tab => {
       const tabElement = tab as HTMLElement;

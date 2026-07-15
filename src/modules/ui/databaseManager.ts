@@ -16,6 +16,18 @@ export interface DatabaseInfo {
   data_dir: string;
 }
 
+export interface DockerMode {
+  type: 'docker';
+  container_id: string;
+  container_name: string;
+}
+
+export interface DirectMode {
+  type: 'direct';
+}
+
+export type ConnectionMode = DirectMode | DockerMode;
+
 export interface DbConnection {
   id: string;
   db_type: string;
@@ -26,6 +38,7 @@ export interface DbConnection {
   database?: string;
   name: string;          // 显示名称
   isConnected: boolean;
+  connection_mode?: ConnectionMode;
 }
 
 export interface SqlResult {
@@ -56,6 +69,50 @@ export interface DbUser {
   username: string;
   host: string;
   privileges: string[];
+}
+
+export interface PaginatedResult {
+  columns: string[];
+  rows: string[][];
+  total_count: number;
+  page: number;
+  page_size: number;
+}
+
+export interface UpdateRowParams {
+  database: string;
+  table: string;
+  updates: Record<string, string | null>;
+  conditions: Record<string, string>;
+}
+
+export interface DeleteRowParams {
+  database: string;
+  table: string;
+  conditions: Record<string, string>;
+}
+
+export interface InsertRowParams {
+  database: string;
+  table: string;
+  data: Record<string, string | null>;
+}
+
+export type SecuritySeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+export type CheckStatus = 'pass' | 'fail' | 'warning' | 'error';
+
+export interface SecurityFinding {
+  item: string;
+  detail: string;
+}
+
+export interface SecurityCheckResult {
+  check_id: string;
+  check_name: string;
+  severity: SecuritySeverity;
+  status: CheckStatus;
+  findings: SecurityFinding[];
+  recommendation: string;
 }
 
 export interface SqlHistoryEntry {
@@ -123,6 +180,18 @@ export class DatabaseManager {
         if (sqlEditor && document.activeElement === sqlEditor) {
           e.preventDefault();
           this.executeSql();
+        }
+      }
+    });
+
+    // 连接模式变动事件
+    document.addEventListener('change', (e) => {
+      const target = e.target as HTMLElement;
+      if (target && target.id === 'db-add-mode') {
+        const mode = (target as HTMLSelectElement).value;
+        const group = document.getElementById('db-add-container-group');
+        if (group) {
+          group.style.display = mode === 'docker' ? '' : 'none';
         }
       }
     });
@@ -204,6 +273,7 @@ export class DatabaseManager {
         dbType: conn.db_type, host: conn.host, port: conn.port,
         username: conn.username, password: conn.password,
         database: conn.database || '', sql: testSql,
+        connectionMode: conn.connection_mode,
       });
 
       conn.isConnected = true;
@@ -260,6 +330,7 @@ export class DatabaseManager {
         dbType: conn.db_type, host: conn.host, port: conn.port,
         username: conn.username, password: conn.password,
         database: this.currentDatabase || conn.database || '', sql,
+        connectionMode: conn.connection_mode,
       }) as SqlResult;
 
       this.lastSqlResult = result;
@@ -286,6 +357,7 @@ export class DatabaseManager {
       this.databases = await invoke('db_list_databases', {
         dbType: conn.db_type, host: conn.host, port: conn.port,
         username: conn.username, password: conn.password,
+        connectionMode: conn.connection_mode,
       }) as string[];
       if (this.databases.length > 0 && !this.currentDatabase) {
         this.currentDatabase = this.databases[0];
@@ -311,6 +383,7 @@ export class DatabaseManager {
         dbType: conn.db_type, host: conn.host, port: conn.port,
         username: conn.username, password: conn.password,
         database: this.currentDatabase,
+        connectionMode: conn.connection_mode,
       }) as TableInfo[];
     } catch (e) {
       console.error('加载表列表失败:', e);
@@ -329,6 +402,7 @@ export class DatabaseManager {
         dbType: conn.db_type, host: conn.host, port: conn.port,
         username: conn.username, password: conn.password,
         database: this.currentDatabase, table: name,
+        connectionMode: conn.connection_mode,
       }) as ColumnInfo[];
 
       // 加载前 100 行数据
@@ -340,6 +414,7 @@ export class DatabaseManager {
         dbType: conn.db_type, host: conn.host, port: conn.port,
         username: conn.username, password: conn.password,
         database: this.currentDatabase, sql,
+        connectionMode: conn.connection_mode,
       }) as SqlResult;
     } catch (e) {
       console.error('加载表数据失败:', e);
@@ -356,6 +431,7 @@ export class DatabaseManager {
       this.users = await invoke('db_list_users', {
         dbType: conn.db_type, host: conn.host, port: conn.port,
         username: conn.username, password: conn.password,
+        connectionMode: conn.connection_mode,
       }) as DbUser[];
     } catch (e) {
       console.error('加载用户列表失败:', e);
@@ -389,11 +465,79 @@ export class DatabaseManager {
         dbType: conn.db_type, host: conn.host, port: conn.port,
         username: conn.username, password: conn.password,
         database: this.currentDatabase,
+        connectionMode: conn.connection_mode,
       }) as string;
       window.showNotification?.(`备份完成: ${result}`, 'success');
     } catch (e) {
       window.showNotification?.(`备份失败: ${e}`, 'error');
     }
+  }
+
+  // ==================== Description & CRUD & Security Audit (New) ====================
+
+  async describeTable(database: string, table: string): Promise<ColumnInfo[]> {
+    if (!this.activeConnection) throw new Error('请先连接数据库');
+    const conn = this.activeConnection;
+    return await invoke('db_describe_table', {
+      dbType: conn.db_type, host: conn.host, port: conn.port,
+      username: conn.username, password: conn.password,
+      database, table,
+      connectionMode: conn.connection_mode,
+    }) as ColumnInfo[];
+  }
+
+  async selectRows(database: string, table: string, page: number, pageSize: number): Promise<PaginatedResult> {
+    if (!this.activeConnection) throw new Error('请先连接数据库');
+    const conn = this.activeConnection;
+    return await invoke('db_select_rows', {
+      dbType: conn.db_type, host: conn.host, port: conn.port,
+      username: conn.username, password: conn.password,
+      database, table, page, pageSize,
+      connectionMode: conn.connection_mode,
+    }) as PaginatedResult;
+  }
+
+  async updateRow(params: UpdateRowParams): Promise<SqlResult> {
+    if (!this.activeConnection) throw new Error('请先连接数据库');
+    const conn = this.activeConnection;
+    return await invoke('db_update_row', {
+      dbType: conn.db_type, host: conn.host, port: conn.port,
+      username: conn.username, password: conn.password,
+      params,
+      connectionMode: conn.connection_mode,
+    }) as SqlResult;
+  }
+
+  async deleteRow(params: DeleteRowParams): Promise<SqlResult> {
+    if (!this.activeConnection) throw new Error('请先连接数据库');
+    const conn = this.activeConnection;
+    return await invoke('db_delete_row', {
+      dbType: conn.db_type, host: conn.host, port: conn.port,
+      username: conn.username, password: conn.password,
+      params,
+      connectionMode: conn.connection_mode,
+    }) as SqlResult;
+  }
+
+  async insertRow(params: InsertRowParams): Promise<SqlResult> {
+    if (!this.activeConnection) throw new Error('请先连接数据库');
+    const conn = this.activeConnection;
+    return await invoke('db_insert_row', {
+      dbType: conn.db_type, host: conn.host, port: conn.port,
+      username: conn.username, password: conn.password,
+      params,
+      connectionMode: conn.connection_mode,
+    }) as SqlResult;
+  }
+
+  async securityAudit(): Promise<SecurityCheckResult[]> {
+    if (!this.activeConnection) throw new Error('请先连接数据库');
+    const conn = this.activeConnection;
+    return await invoke('db_security_audit', {
+      dbType: conn.db_type, host: conn.host, port: conn.port,
+      username: conn.username, password: conn.password,
+      connectionMode: conn.connection_mode,
+    }) as SecurityCheckResult[];
   }
 
   // ==================== Tab Management ====================
@@ -482,6 +626,17 @@ export class DatabaseManager {
     const password = (document.getElementById('db-add-password') as HTMLInputElement)?.value || '';
     const database = (document.getElementById('db-add-database') as HTMLInputElement)?.value?.trim() || '';
 
+    const mode = (document.getElementById('db-add-mode') as HTMLSelectElement)?.value || 'direct';
+    const container = (document.getElementById('db-add-container') as HTMLInputElement)?.value?.trim() || '';
+
+    const connection_mode: ConnectionMode = mode === 'docker' ? {
+      type: 'docker',
+      container_id: container,
+      container_name: container
+    } : {
+      type: 'direct'
+    };
+
     if (!name) {
       window.showNotification?.('请输入连接名称', 'warning');
       return;
@@ -490,6 +645,7 @@ export class DatabaseManager {
     const conn: DbConnection = {
       id: `db-${Date.now()}`, db_type: dbType, host, port,
       username, password, database, name, isConnected: false,
+      connection_mode
     };
 
     this.connections.push(conn);

@@ -47,7 +47,7 @@ export class DockerLogsModal {
     document.body.appendChild(wrapper);
 
     wrapper.addEventListener('click', (event) => {
-      if (event.target === wrapper || (event.target as HTMLElement).classList.contains('docker-modal-close')) {
+      if ((event.target as HTMLElement).classList.contains('docker-modal-close')) {
         this.hide();
       }
     });
@@ -114,7 +114,7 @@ export class DockerFileModal {
     document.body.appendChild(wrapper);
 
     wrapper.addEventListener('click', (event) => {
-      if (event.target === wrapper || (event.target as HTMLElement).classList.contains('docker-modal-close')) {
+      if ((event.target as HTMLElement).classList.contains('docker-modal-close')) {
         this.hide();
       }
     });

@@ -855,7 +855,7 @@ export class DatabasePageManager {
                             <span class="icon">📝</span> 新建查询
                         </button>
                         <button id="db-quick-audit" class="db-btn db-btn-warning" style="margin-left: 0.5rem;">
-                            <span class="icon">�️</span> 安全审计
+                            <span class="icon">🛡️</span> 安全审计
                         </button>
                     </div>
                 </div>

@@ -138,7 +138,8 @@ async function connectServer(serverId: string): Promise<void> {
     }
 
     stateManager?.setLoadingStep?.(`正在连接 ${connection.host}:${connection.port}...`);
-    await sshConnectionManager.connect(connection.host, connection.port, connection.username, password, authType, connection.keyPath, connection.keyPassphrase);
+    // useSudo 从保存的配置读取；sudoPassword 传 undefined，由连接管理器自动解密已保存的 sudo 密码
+    await sshConnectionManager.connect(connection.host, connection.port, connection.username, password, authType, connection.keyPath, connection.keyPassphrase, connection.useSudo || false);
     recordLastConnected(serverId);
 
     stateManager?.setLoadingStep?.('连接成功，正在初始化...');
@@ -228,6 +229,10 @@ async function saveServer(): Promise<void> {
   const keyPassphrase = (document.getElementById('sc-keypass') as HTMLInputElement)?.value || '';
   const editingId = (document.getElementById('sc-editing-id') as HTMLInputElement)?.value || '';
 
+  // 新增：读取 sudo 选项
+  const useSudo = (document.getElementById('sc-use-sudo') as HTMLInputElement)?.checked ?? false;
+  const sudoPassword = (document.getElementById('sc-sudo-password') as HTMLInputElement)?.value || '';
+
   if (!host) { window.showNotification?.('请输入主机地址', 'warning'); return; }
   if (!username) { window.showNotification?.('请输入用户名', 'warning'); return; }
   if (authType === 'password' && !password && !editingId) { window.showNotification?.('请输入密码', 'warning'); return; }
@@ -238,6 +243,8 @@ async function saveServer(): Promise<void> {
     password: authType === 'password' ? password : undefined,
     keyPath: authType === 'key' ? keyPath : undefined,
     keyPassphrase: authType === 'key' ? keyPassphrase : undefined,
+    useSudo,
+    sudoPassword: sudoPassword || undefined,
   };
 
   try {
@@ -249,6 +256,37 @@ async function saveServer(): Promise<void> {
       if (!update.password) delete update.password;
       await sshManager.updateConnection(editingId, update);
       window.showNotification?.('连接配置已更新', 'success');
+
+      // 检查当前是否有活跃的会话与该配置相对应，如果有，则把最新的 useSudo 和 sudoPassword 同步给后端
+      try {
+        const { multiSessionManager } = await import('../remote/multiSessionManager');
+        const activeSessions = multiSessionManager.getSessions();
+        const conn = sshManager.getConnection(editingId);
+        if (conn) {
+          const matchedSession = activeSessions.find(s => 
+            s.connection.host === conn.host && 
+            s.connection.port === conn.port && 
+            s.connection.username === conn.username
+          );
+          if (matchedSession && matchedSession.sessionId) {
+            console.log('🔄 同步已连接会话的 sudo 配置:', matchedSession.sessionId, 'useSudo:', useSudo);
+            await (window as any).__TAURI__.core.invoke('ssh_update_session_sudo_config_direct', {
+              sessionId: matchedSession.sessionId,
+              useSudo,
+              password: sudoPassword || ""
+            });
+            // 同步前端 multiSessionManager 内部的 connection 状态
+            matchedSession.connection.useSudo = useSudo;
+            // 同步前端全局 sshConnectionManager 的状态
+            const currentStatus = (window as any).sshConnectionManager?.getConnectionStatus();
+            if (currentStatus && currentStatus.sessionId === matchedSession.sessionId) {
+              currentStatus.useSudo = useSudo;
+            }
+          }
+        }
+      } catch (err) {
+        console.error('同步后端会话 sudo 配置失败:', err);
+      }
     } else {
       await sshManager.addConnection(serverData);
       window.showNotification?.('连接已保存', 'success');
@@ -370,6 +408,22 @@ function scClearSelection(): void {
   const hidden = document.getElementById('scw-selected-id') as HTMLInputElement;
   if (hidden) hidden.value = '';
   document.querySelectorAll('.sc-hist-item.active').forEach(el => el.classList.remove('active'));
+
+  // 恢复密码输入框为默认状态
+  const savedWrapper = document.getElementById('scw-password-saved-wrapper');
+  const inputWrapper = document.getElementById('scw-password-input-wrapper');
+  if (savedWrapper) savedWrapper.style.display = 'none';
+  if (inputWrapper) inputWrapper.style.display = 'block';
+}
+
+function scToggleSudo(checked: boolean): void {
+  const el = document.getElementById('sc-sudo-password-wrapper');
+  if (el) el.style.display = checked ? '' : 'none';
+}
+
+function scwToggleSudo(checked: boolean): void {
+  const el = document.getElementById('scw-sudo-password-wrapper');
+  if (el) el.style.display = checked ? '' : 'none';
 }
 
 function scSelectServer(id: string): void {
@@ -382,10 +436,45 @@ function scSelectServer(id: string): void {
   set('scw-selected-id', id);
   if (conn.keyPath) set('scw-keypath', conn.keyPath);
   scwSetAuthType(conn.authType || 'password');
+
+  // 同步 sudo 选项
+  const useSudoCheckbox = document.getElementById('scw-use-sudo') as HTMLInputElement;
+  if (useSudoCheckbox) {
+    useSudoCheckbox.checked = conn.useSudo || false;
+    scwToggleSudo(useSudoCheckbox.checked);
+  }
+  const sudoPasswordInput = document.getElementById('scw-sudo-password') as HTMLInputElement;
+  if (sudoPasswordInput) {
+    sudoPasswordInput.value = '';
+    sudoPasswordInput.placeholder = conn.encryptedSudoPassword ? '••••••••' : 'SSH 密码与 sudo 密码一致可不填';
+  }
+
+  // 同步密码已保存的状态
+  const hasSavedPassword = conn.encryptedPassword || conn.accounts?.[0]?.encryptedPassword;
+  const savedWrapper = document.getElementById('scw-password-saved-wrapper');
+  const inputWrapper = document.getElementById('scw-password-input-wrapper');
+  if (savedWrapper && inputWrapper) {
+    if (conn.authType === 'password' && hasSavedPassword) {
+      savedWrapper.style.display = 'flex';
+      inputWrapper.style.display = 'none';
+      const pwdInput = document.getElementById('scw-password') as HTMLInputElement;
+      if (pwdInput) pwdInput.value = '';
+    } else {
+      savedWrapper.style.display = 'none';
+      inputWrapper.style.display = 'block';
+    }
+  }
+
   document.querySelectorAll('.sc-hist-item').forEach(el => {
     el.classList.toggle('active', el.getAttribute('data-server-id') === id);
   });
-  (document.getElementById('scw-password') as HTMLInputElement)?.focus();
+
+  // 如果已保存密码或密钥，则不需要自动将焦点 focus 到密码输入框，免得让用户产生必须输入密码的暗示
+  if (conn.authType === 'password' && !hasSavedPassword) {
+    (document.getElementById('scw-password') as HTMLInputElement)?.focus();
+  } else if (conn.authType === 'key' && !conn.keyPath) {
+    (document.getElementById('scw-keypath') as HTMLInputElement)?.focus();
+  }
 }
 
 async function scConnectForm(): Promise<void> {
@@ -398,6 +487,9 @@ async function scConnectForm(): Promise<void> {
   const keyPassphrase = (document.getElementById('scw-keypass') as HTMLInputElement)?.value || '';
   const remember = (document.getElementById('scw-remember') as HTMLInputElement)?.checked ?? false;
   const selectedId = scwVal('scw-selected-id');
+
+  const useSudo = (document.getElementById('scw-use-sudo') as HTMLInputElement)?.checked ?? false;
+  const sudoPassword = (document.getElementById('scw-sudo-password') as HTMLInputElement)?.value || '';
 
   if (!host) { window.showNotification?.('请输入服务器地址', 'warning'); return; }
   if (authType === 'key' && !keyPath && !selectedId) { window.showNotification?.('请选择私钥文件', 'warning'); return; }
@@ -413,7 +505,7 @@ async function scConnectForm(): Promise<void> {
   (window as any).refreshDashboard?.();
 
   try {
-    await sshConnectionManager.connect(host, port, username, password, authType, keyPath, keyPassphrase);
+    await sshConnectionManager.connect(host, port, username, password, authType, keyPath, keyPassphrase, useSudo, sudoPassword || undefined);
 
     // 记住此连接 → 保存（仅新连接）
     if (remember && !selectedId) {
@@ -423,6 +515,8 @@ async function scConnectForm(): Promise<void> {
           password: authType === 'password' ? password : undefined,
           keyPath: authType === 'key' ? keyPath : undefined,
           keyPassphrase: authType === 'key' ? keyPassphrase : undefined,
+          useSudo,
+          sudoPassword: sudoPassword || undefined,
         });
       } catch { /* 保存失败不阻断连接 */ }
     }
@@ -613,4 +707,6 @@ export function initServerModalManager(): void {
   (window as any).scwTogglePassword = scwTogglePassword;
   (window as any).scManageServers = scManageServers;
   (window as any).scCloseManage = scCloseManage;
+  (window as any).scToggleSudo = scToggleSudo;
+  (window as any).scwToggleSudo = scwToggleSudo;
 }

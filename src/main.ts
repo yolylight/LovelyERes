@@ -4,7 +4,13 @@
  */
 
 import './css/main.css';
+import './styles/session-tabs.css';
 import 'xterm/css/xterm.css';
+import hljs from 'highlight.js';
+import 'highlight.js/styles/github-dark.css';
+
+// 注入全局对象以兼容其他模块的调用
+(window as any).hljs = hljs;
 
 import type { LovelyResApp } from './modules/core/app';
 

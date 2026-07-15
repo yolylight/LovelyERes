@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import './css/themes/index.css';
 
 interface ContainerInfo {
   name: string;
@@ -64,33 +65,14 @@ class ContainerTerminalManager {
       const themeSettings = await invoke('get_theme_settings');
       const currentTheme = (themeSettings as any)?.current_theme || 'dark';
       document.documentElement.setAttribute('data-theme', currentTheme);
-      // 初次加载对应主题CSS
-      const firstLink = document.createElement('link');
-      firstLink.rel = 'stylesheet';
-      firstLink.href = `/src/css/themes/${currentTheme}.css`;
-      firstLink.setAttribute('data-theme-css', currentTheme);
-      document.head.appendChild(firstLink);
+      document.body.setAttribute('data-theme', currentTheme);
       console.log('容器终端主题已设置:', currentTheme);
-
-      // 通过 localStorage 轮询同步主程序主题（避免权限限制）
-      // 动态加载主题CSS（与主程序一致）
-      const ensureThemeCss = (t: string) => {
-        // 移除旧的主题CSS
-        const existing = document.querySelectorAll('link[data-theme-css]');
-        existing.forEach(l => l.remove());
-        // 加载新的主题CSS
-        const link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.href = `/src/css/themes/${t}.css`;
-        link.setAttribute('data-theme-css', t);
-        document.head.appendChild(link);
-      };
 
       const applyTheme = (t: string) => {
         const prev = document.documentElement.getAttribute('data-theme');
         if (prev !== t) {
           document.documentElement.setAttribute('data-theme', t);
-          ensureThemeCss(t);
+          document.body.setAttribute('data-theme', t);
           console.log('容器终端主题已同步为:', t);
         }
       };
@@ -111,6 +93,7 @@ class ContainerTerminalManager {
     } catch (error) {
       console.warn('获取主题设置失败，使用默认主题:', error);
       document.documentElement.setAttribute('data-theme', 'dark');
+      document.body.setAttribute('data-theme', 'dark');
     }
   }
 

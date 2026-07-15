@@ -129,6 +129,7 @@
         import { install } from '@icon-park/vue-next/es/all';
         import '@icon-park/vue-next/styles/index.css';
         import 'xterm/css/xterm.css';
+        import '/src/css/themes/index.css';
         import SSHTerminal from '/src/components/SSHTerminal.vue';
 
         // 检测是否为 macOS
@@ -272,26 +273,8 @@
             html.setAttribute('data-theme', theme);
 
             // 更新body类名
-            body.classList.remove('light-theme', 'dark-theme', 'sakura-theme');
+            body.classList.remove('light-theme', 'dark-theme', 'sakura-theme', 'midnight-theme', 'ocean-theme');
             body.classList.add(`${theme}-theme`);
-
-            // 动态加载主题CSS文件
-            loadThemeCSS(theme);
-        }
-
-        function loadThemeCSS(theme) {
-            // 移除旧的主题CSS
-            const existingThemeLink = document.querySelector('link[data-theme-css]');
-            if (existingThemeLink) {
-                existingThemeLink.remove();
-            }
-
-            // 加载新的主题CSS
-            const link = document.createElement('link');
-            link.rel = 'stylesheet';
-            link.href = `/src/css/themes/${theme}.css`;
-            link.setAttribute('data-theme-css', 'true');
-            document.head.appendChild(link);
         }
 
         // 初始化字体设置

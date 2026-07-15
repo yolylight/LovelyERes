@@ -52,7 +52,7 @@ impl TerminalOutput {
     pub fn timeout(command: &str, duration: std::time::Duration) -> Self {
         Self {
             command: command.to_string(),
-            output: format!("命令执行超时（{} 绉掞級", duration.as_secs()),
+            output: format!("命令执行超时（{} 秒）", duration.as_secs()),
             exit_code: None,
             timestamp: chrono::Utc::now(),
             duration_ms: duration.as_millis().min(u128::from(u64::MAX)) as u64,
@@ -159,6 +159,12 @@ enum WorkerCommand {
     },
     UpdateSudoPassword {
         session_id: String,
+        password: Option<String>,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    UpdateSudoConfig {
+        session_id: String,
+        use_sudo: bool,
         password: Option<String>,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
@@ -323,11 +329,17 @@ async fn connect_async(
     .map_err(|e| {
         let err_str = e.to_string();
         if err_str.contains("10061") || err_str.contains("Connection refused") {
-            format!("杩炴帴琚嫆缁?({}:{})锛氱洰鏍囩鍙ｆ湭寮€鏀炬垨 SSH 鏈嶅姟鏈繍琛屻€傝妫€鏌ワ細\n1. 端口号是否正确\n2. SSH 服务是否启动\n3. 闃茬伀澧欐槸鍚︽斁琛?, host, port)
+            format!("连接被拒绝 ({}:{})：目标端口未开放或 SSH 服务未运行。请检查：
+1. 端口号是否正确
+2. SSH 服务是否启动
+3. 防火墙是否放行", host, port)
         } else if err_str.contains("10060") || err_str.contains("timed out") {
-            format!("连接超时 ({}:{})锛氭棤娉曞埌杈剧洰鏍囦富鏈恒€傝妫€鏌ワ細\n1. IP 地址是否正确\n2. 网络是否可达\n3. 闃茬伀澧欐槸鍚﹂樆姝?, host, port)
+            format!("连接超时 ({}:{})：无法到达目标主机。请检查：
+1. IP 地址是否正确
+2. 网络是否可达
+3. 防火墙是否阻止", host, port)
         } else if err_str.contains("10065") || err_str.contains("No route") {
-            format!("鏃犳硶璺敱鍒颁富鏈?({}:{})：网络不可达", host, port)
+            format!("无法路由到主机 ({}:{})：网络不可达", host, port)
         } else {
             format!("连接失败 ({}:{}): {}", host, port, err_str)
         }
@@ -437,6 +449,93 @@ async fn execute_command_async(
     Ok(TerminalOutput::new(command, &output, exit_code))
 }
 
+/// 使用 sudo -S 执行命令（通过 stdin 提供 sudo 密码）
+async fn execute_sudo_command_async(
+    handle: &Handle<ClientHandler>,
+    command: &str,
+    sudo_password: &str,
+) -> Result<TerminalOutput, String> {
+    // Open a session channel
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    // Execute command with sudo -S (read password from stdin)
+    let sudo_cmd = format!("sudo -S sh -c {}", shell_quote(command));
+    channel
+        .exec(true, sudo_cmd)
+        .await
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    // Write password to stdin
+    // sudo -S reads password from stdin. We append newline just in case.
+    // Note: We don't send EOF immediately because the command itself might produce output
+    // and we want to keep the channel open until the process exits.
+    let mut pwd_input = sudo_password.to_string();
+    if !pwd_input.ends_with('\n') {
+        pwd_input.push('\n');
+    }
+
+    channel.data(pwd_input.as_bytes()).await
+        .map_err(|e| format!("Failed to write password to stdin: {}", e))?;
+
+    // Read output
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_code: Option<i32> = None;
+
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::Data { data }) => {
+                stdout.extend_from_slice(&data);
+            }
+            Some(ChannelMsg::ExtendedData { data, ext }) => {
+                if ext == 1 {
+                    // stderr
+                    stderr.extend_from_slice(&data);
+                }
+            }
+            Some(ChannelMsg::ExitStatus { exit_status }) => {
+                exit_code = Some(exit_status as i32);
+            }
+            Some(ChannelMsg::Eof) | None => {
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let stderr_str = String::from_utf8_lossy(&stderr).to_string();
+
+    // Check for common sudo password errors
+    if stderr_str.contains("Sorry, try again") ||
+       stderr_str.contains("incorrect password") ||
+       stderr_str.contains("sudo: 3 incorrect password attempts") {
+        return Err("Sudo密码错误，请检查配置".to_string());
+    }
+
+    let mut output = String::from_utf8_lossy(&stdout).to_string();
+
+    // Try to remove the password prompt from output/stderr if present
+    // It usually appears on stderr, but we are appending stderr to output
+    let prompt_markers = ["[sudo] password for", "Password:"];
+
+    let clean_stderr = stderr_str.lines()
+        .filter(|line| !prompt_markers.iter().any(|m| line.contains(m)))
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    if !clean_stderr.is_empty() {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&clean_stderr);
+    }
+
+    Ok(TerminalOutput::new(command, &output, exit_code))
+}
+
 async fn list_sftp_files_async(
     handle: &Handle<ClientHandler>,
     path: &str,
@@ -446,7 +545,7 @@ async fn list_sftp_files_async(
         .channel_open_session()
         .await
         .map_err(|e| format!("Failed to open channel: {}", e))?;
-    
+
     channel
         .request_subsystem(true, "sftp")
         .await
@@ -472,10 +571,10 @@ async fn list_sftp_files_async(
         };
         
         let attrs = entry.metadata();
-        // 鏍规嵁 permissions 字段判断文件类型
+        // 根据 permissions 字段判断文件类型
         // Unix 文件类型掩码: 0o170000
         // S_IFDIR  = 0o040000 (目录)
-        // S_IFREG  = 0o100000 (鏅€氭枃浠?
+        // S_IFREG  = 0o100000 (普通文件)
         // S_IFLNK  = 0o120000 (符号链接)
         let (file_type, is_dir) = if let Some(perms) = attrs.permissions {
             let file_type_bits = perms & 0o170000;
@@ -486,7 +585,7 @@ async fn list_sftp_files_async(
                 _ => ("other".to_string(), false),
             }
         } else {
-            // 如果没有 permissions锛屼娇鐢?file_type() 鏂规硶
+            // 如果没有 permissions，使用 file_type() 方法
             let ft = entry.file_type();
             if ft.is_dir() {
                 ("directory".to_string(), true)
@@ -640,6 +739,31 @@ async fn create_sftp_directory_async(
     Ok(())
 }
 
+async fn delete_sftp_directory_async(
+    handle: &Handle<ClientHandler>,
+    path: &str,
+) -> Result<(), String> {
+    let channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| format!("Failed to request SFTP subsystem: {}", e))?;
+
+    let sftp = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("Failed to create SFTP session: {}", e))?;
+
+    sftp.remove_dir(path)
+        .await
+        .map_err(|e| format!("Failed to delete directory: {}", e))?;
+
+    Ok(())
+}
+
 async fn rename_sftp_file_async(
     handle: &Handle<ClientHandler>,
     old_path: &str,
@@ -731,7 +855,7 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                                     if let Some(pwd) = effective_pwd {
                                         execute_sudo_command_async(&handle, &command, pwd).await
                                     } else {
-                                        let final_command = format!("sudo {}", command);
+                                        let final_command = format!("sudo sh -c {}", shell_quote(&command));
                                         execute_command_async(&handle, &final_command).await
                                     }
                                 } else {
@@ -836,6 +960,17 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                 
                 WorkerCommand::UpdateSudoPassword { session_id, password, response_tx } => {
                     let result = if let Some(session) = sessions.get_mut(&session_id) {
+                        session.sudo_password = password;
+                        Ok(())
+                    } else {
+                        Err(format!("Session not found: {}", session_id))
+                    };
+                    let _ = response_tx.send(result);
+                }
+
+                WorkerCommand::UpdateSudoConfig { session_id, use_sudo, password, response_tx } => {
+                    let result = if let Some(session) = sessions.get_mut(&session_id) {
+                        session.use_sudo = use_sudo;
                         session.sudo_password = password;
                         Ok(())
                     } else {
@@ -1185,7 +1320,7 @@ pub struct SSHManagerRussh {
     _worker_handle: Mutex<thread::JoinHandle<()>>,
     // Track current active session for backward compatibility
     current_session: Arc<Mutex<Option<String>>>,
-    /// busybox 璺緞 (None = 鏈惎鐢? Some = 宸插惎鐢紝瀛樺偍杩滅璺緞濡?/tmp/busybox)
+    /// busybox 路径 (None = 未启用, Some = 已启用，存储远端路径如 /tmp/busybox)
     busybox_path: Mutex<Option<String>>,
 }
 
@@ -1264,7 +1399,7 @@ impl SSHManagerRussh {
         
         let result = response_rx
             .recv_timeout(std::time::Duration::from_secs(30))
-            .map_err(|_| "杩炴帴瓒呮椂锛氭湇鍔″櫒鍦?30 绉掑唴鏈搷搴?.to_string())??;
+            .map_err(|_| "连接超时：服务器在 30 秒内未响应".to_string())??;
 
         // Set as current session
         self.set_current_session(Some(result.clone()));
@@ -1273,7 +1408,7 @@ impl SSHManagerRussh {
     }
     
     /// Execute command on current session (backward compatible)
-    /// 濡傛灉鍚敤浜?busybox 妯″紡锛岃嚜鍔ㄧ敤 busybox sh -c 包裹命令
+    /// 如果启用了 busybox 模式，自动用 busybox sh -c 包裹命令
     pub fn execute_command(&self, command: &str) -> Result<TerminalOutput, String> {
         self.execute_command_with_timeout(command, std::time::Duration::from_secs(60))
     }
@@ -1284,12 +1419,14 @@ impl SSHManagerRussh {
         self.execute_command_on_session_with_timeout(&session_id, &final_command, timeout)
     }
 
-    /// 如果 busybox 宸插惎鐢紝鐢?busybox sh -c 执行命令
-    /// busybox sh 鏄潤鎬侀摼鎺ョ殑锛屼笉鍙?LD_PRELOAD 鍜岃绡℃敼鐨勭郴缁熷懡浠ゅ奖鍝?    fn wrap_with_busybox(&self, command: &str) -> String {
+    /// 如果 busybox 已启用，用 busybox sh -c 执行命令
+    /// busybox sh 是静态链接的，不受 LD_PRELOAD 和被篡改的系统命令影响
+    fn wrap_with_busybox(&self, command: &str) -> String {
         if let Ok(guard) = self.busybox_path.lock() {
             if let Some(ref bb) = *guard {
-                // 鐢?busybox sh -c 鎵ц锛岀‘淇?PATH 优先使用 busybox 自带命令
-                // 设置 PATH 璁?busybox 鍐呯疆鍛戒护浼樺厛浜庣郴缁熷懡浠?                let quoted_busybox = shell_quote(bb);
+                // 用 busybox sh -c 执行，确保 PATH 优先使用 busybox 自带命令
+                // 设置 PATH 让 busybox 内置命令优先于系统命令
+                let quoted_busybox = shell_quote(bb);
                 let quoted_command = shell_quote(command);
                 return format!(
                     "export BUSYBOX={}; {} sh -c {}",
@@ -1302,15 +1439,16 @@ impl SSHManagerRussh {
         command.to_string()
     }
 
-    // 鈹€鈹€ busybox 管理 鈹€鈹€
+    // ── busybox 管理 ──
 
-    /// 设置 busybox 璺緞锛堝惎鐢?busybox 妯″紡锛?    pub fn set_busybox_path(&self, path: Option<String>) {
+    /// 设置 busybox 路径（启用 busybox 模式）
+    pub fn set_busybox_path(&self, path: Option<String>) {
         if let Ok(mut guard) = self.busybox_path.lock() {
             *guard = path;
         }
     }
 
-    /// 鑾峰彇褰撳墠 busybox 璺緞
+    /// 获取当前 busybox 路径
     pub fn get_busybox_path(&self) -> Option<String> {
         self.busybox_path.lock().ok().and_then(|g| g.clone())
     }
@@ -1338,7 +1476,7 @@ impl SSHManagerRussh {
         let wait_timeout = timeout + std::time::Duration::from_secs(2);
         response_rx
             .recv_timeout(wait_timeout)
-            .map_err(|_| format!("命令执行超时（{} 绉掞級", timeout.as_secs()))?
+            .map_err(|_| format!("命令执行超时（{} 秒）", timeout.as_secs()))?
     }
 
     /// Execute multiple commands in parallel on the current session
@@ -1357,7 +1495,7 @@ impl SSHManagerRussh {
         let timeout_secs = 60 + (commands.len() as u64 * 5);
         response_rx
             .recv_timeout(std::time::Duration::from_secs(timeout_secs))
-            .map_err(|_| format!("批量命令执行超时（{} 绉掞級", timeout_secs))?
+            .map_err(|_| format!("批量命令执行超时（{} 秒）", timeout_secs))?
     }
 
     // ================== SFTP Methods ==================
@@ -1381,7 +1519,7 @@ impl SSHManagerRussh {
         
         response_rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "鎿嶄綔瓒呮椂锛?20 绉掞級".to_string())?
+            .map_err(|_| "操作超时（120 秒）".to_string())?
     }
     
     /// Read file contents on current session
@@ -1403,7 +1541,7 @@ impl SSHManagerRussh {
         
         response_rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "鎿嶄綔瓒呮椂锛?20 绉掞級".to_string())?
+            .map_err(|_| "操作超时（120 秒）".to_string())?
     }
     
     /// Write file on current session
@@ -1426,7 +1564,7 @@ impl SSHManagerRussh {
         
         response_rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "鎿嶄綔瓒呮椂锛?20 绉掞級".to_string())?
+            .map_err(|_| "操作超时（120 秒）".to_string())?
     }
     
     /// Delete file on current session
@@ -1448,7 +1586,7 @@ impl SSHManagerRussh {
         
         response_rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "鎿嶄綔瓒呮椂锛?20 绉掞級".to_string())?
+            .map_err(|_| "操作超时（120 秒）".to_string())?
     }
     
     /// Create directory on current session
@@ -1470,7 +1608,7 @@ impl SSHManagerRussh {
         
         response_rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "鎿嶄綔瓒呮椂锛?20 绉掞級".to_string())?
+            .map_err(|_| "操作超时（120 秒）".to_string())?
     }
     
     /// Rename file on current session
@@ -1493,7 +1631,7 @@ impl SSHManagerRussh {
         
         response_rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "鎿嶄綔瓒呮椂锛?20 绉掞級".to_string())?
+            .map_err(|_| "操作超时（120 秒）".to_string())?
     }
     
     // ================== Session Management ==================
@@ -1519,7 +1657,7 @@ impl SSHManagerRussh {
         
         let result = response_rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "鎿嶄綔瓒呮椂锛?20 绉掞級".to_string())?;
+            .map_err(|_| "操作超时（120 秒）".to_string())?;
         
         // If disconnecting current session, clear it
         if let Ok(guard) = self.current_session.lock() {
@@ -1545,7 +1683,7 @@ impl SSHManagerRussh {
         
         response_rx
             .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "鎿嶄綔瓒呮椂锛?20 绉掞級".to_string())?
+            .map_err(|_| "操作超时（120 秒）".to_string())?
     }
     
     /// Check if current session is connected (backward compatible)
@@ -2107,7 +2245,25 @@ echo "PATH=$PATH""#;
             
         response_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .map_err(|_| "更新 sudo 密码超ʱ".to_string())??;
+            .map_err(|_| "更新 sudo 密码超时".to_string())??;
+        
+        Ok(())
+    }
+
+    /// Update sudo config (use_sudo and password) for a session
+    pub fn update_session_sudo_config(&self, session_id: &str, use_sudo: bool, password: Option<String>) -> Result<(), String> {
+        let (response_tx, response_rx) = mpsc::channel();
+        
+        self.send_to_worker(WorkerCommand::UpdateSudoConfig {
+                session_id: session_id.to_string(),
+                use_sudo,
+                password,
+                response_tx,
+            })?;
+            
+        response_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| "更新 sudo 配置超时".to_string())??;
         
         Ok(())
     }

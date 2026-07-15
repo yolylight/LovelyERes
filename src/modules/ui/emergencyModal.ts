@@ -126,9 +126,7 @@ export class EmergencyResultModal {
     console.log('🔗 绑定 EmergencyResultModal 事件监听器');
 
     document.getElementById('em-modal-close')?.addEventListener('click', () => this.hide());
-    this.modal?.addEventListener('click', (event) => {
-      if (event.target === this.modal) this.hide();
-    });
+
 
     // 保存 keydown 处理器的引用，以便后续可以移除
     this.keydownHandler = (event: KeyboardEvent) => {

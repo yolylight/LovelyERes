@@ -180,6 +180,19 @@ export class SSHConfigManager {
       }
     }
 
+    // 如果有 sudoPassword，进行加密
+    if ((connection as any).sudoPassword) {
+      try {
+        const encryptedSudoPassword = await invoke('encrypt_password', {
+          password: (connection as any).sudoPassword
+        }) as string;
+        newConnection.encryptedSudoPassword = encryptedSudoPassword;
+      } catch (error) {
+        console.error('❌ Sudo密码加密失败:', error);
+        throw new Error('Sudo密码加密失败');
+      }
+    }
+
     // 加密额外账号的密码
     if (newConnection.accounts && newConnection.accounts.length > 0) {
       for (const account of newConnection.accounts) {
@@ -235,6 +248,26 @@ export class SSHConfigManager {
         updates.encryptedPassword = originalConnection.encryptedPassword;
       }
       delete (updates as any).password; // 删除空密码字段
+    }
+
+    // 如果更新了 sudoPassword，需要重新加密
+    if ((updates as any).sudoPassword) {
+      try {
+        const encryptedSudoPassword = await invoke('encrypt_password', {
+          password: (updates as any).sudoPassword
+        }) as string;
+        updates.encryptedSudoPassword = encryptedSudoPassword;
+        delete (updates as any).sudoPassword; // 删除明文密码
+      } catch (error) {
+        console.error('❌ Sudo密码加密失败:', error);
+        throw new Error('Sudo密码加密失败');
+      }
+    } else if ((updates as any).sudoPassword === undefined || (updates as any).sudoPassword === '') {
+      // 密码为空时，如果之前已有加密密码，则予以保留
+      if (originalConnection.encryptedSudoPassword) {
+        updates.encryptedSudoPassword = originalConnection.encryptedSudoPassword;
+      }
+      delete (updates as any).sudoPassword; // 删除空密码字段
     }
 
     // 加密额外账号的密码

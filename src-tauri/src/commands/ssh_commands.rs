@@ -69,6 +69,8 @@ pub async fn ssh_connect_direct(
     auth_type: Option<String>,
     key_path: Option<String>,
     key_passphrase: Option<String>,
+    use_sudo: Option<bool>,
+    sudo_password: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     #[cfg(debug_assertions)]
@@ -78,10 +80,12 @@ pub async fn ssh_connect_direct(
         println!("  Port: {}", port);
         println!("  Username: {}", username);
         println!("  Auth Type: {:?}", auth_type);
+        println!("  Use Sudo: {:?}", use_sudo);
     }
 
     let auth = auth_type.as_deref().unwrap_or("password");
     let manager = &state.ssh_manager;
+    let use_sudo = use_sudo.unwrap_or(false);
 
     let result = match auth {
         "key" => {
@@ -89,14 +93,30 @@ pub async fn ssh_connect_direct(
             if let Some(kp) = &key_path {
                 let key_content = std::fs::read_to_string(kp)
                     .map_err(|e| format!("读取密钥文件失败: {}", e))?;
-                manager.connect(&host, port, &username, key_passphrase.as_deref(), Some(&key_content))
+                manager.connect_with_sudo(
+                    &host,
+                    port,
+                    &username,
+                    key_passphrase.as_deref(),
+                    Some(&key_content),
+                    use_sudo,
+                    sudo_password.as_deref(),
+                )
             } else {
                 Err("密钥认证需要提供密钥路径".to_string())
             }
         }
         _ => {
             // 密码认证
-            manager.connect(&host, port, &username, password.as_deref(), None)
+            manager.connect_with_sudo(
+                &host,
+                port,
+                &username,
+                password.as_deref(),
+                None,
+                use_sudo,
+                sudo_password.as_deref(),
+            )
         }
     };
 
@@ -105,7 +125,8 @@ pub async fn ssh_connect_direct(
         Err(e) => println!("❌ [Tauri] SSH 连接失败: {}", e),
     }
 
-    result.map(|_| format!("已连接到 {}@{}:{}", username, host, port))
+    // 返回后端会话 ID（格式 username@host:port），供前端多会话管理使用
+    result
 }
 
 /// 测试SSH连接（使用 russh）- 复用已有的 Tokio runtime 避免重复创建
@@ -159,6 +180,42 @@ pub async fn ssh_test_connection(
 pub async fn ssh_disconnect_direct(state: State<'_, AppState>) -> Result<(), String> {
     let manager = &state.ssh_manager;
     manager.disconnect().map_err(|e| e.to_string())
+}
+
+/// 切换当前活动会话（多标签页支持）
+#[tauri::command]
+pub async fn ssh_set_current_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = &state.ssh_manager;
+    manager.set_current_session_id(&session_id).map_err(|e| e.to_string())
+}
+
+/// 更新指定会话的 sudo 密码（sudo 密码错误重试时使用）
+#[tauri::command]
+pub async fn ssh_update_session_sudo_password_direct(
+    session_id: String,
+    password: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = &state.ssh_manager;
+    // 空字符串视为 None
+    let pwd_opt = if password.is_empty() { None } else { Some(password) };
+    manager.update_session_sudo_password(&session_id, pwd_opt).map_err(|e| e.to_string())
+}
+
+/// 更新指定会话的 sudo 配置（保存连接配置时使用）
+#[tauri::command]
+pub async fn ssh_update_session_sudo_config_direct(
+    session_id: String,
+    use_sudo: bool,
+    password: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = &state.ssh_manager;
+    let pwd_opt = password.filter(|p| !p.is_empty());
+    manager.update_session_sudo_config(&session_id, use_sudo, pwd_opt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
