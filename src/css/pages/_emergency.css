@@ -285,6 +285,7 @@
   margin-bottom: 8px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -887,3 +888,185 @@
 }
 
 .out-ctx-modal-btn:hover { background: var(--hover-bg); }
+
+/* ─── 调查清单工具栏角标 ─── */
+.em-invest-toolbar-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--primary-color);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 8px;
+  margin-left: 4px;
+}
+
+/* ─── 调查清单模态框 ─── */
+.em-invest-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  animation: em-invest-fadein 0.15s ease;
+}
+@keyframes em-invest-fadein { from { opacity: 0; } to { opacity: 1; } }
+
+.em-invest-modal {
+  width: 560px;
+  max-width: 90vw;
+  max-height: 70vh;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: em-invest-slidein 0.2s ease;
+}
+@keyframes em-invest-slidein { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ─── 调查清单面板内容 ─── */
+.em-invest-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.em-invest-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.em-invest-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.em-invest-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.em-invest-head-ops {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.em-invest-head-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.14s;
+}
+.em-invest-head-btn:hover {
+  background: var(--hover-bg, var(--bg-tertiary));
+  color: var(--text-primary);
+}
+.em-invest-head-btn.danger { color: var(--error-color); }
+.em-invest-head-btn.danger:hover { background: rgba(239, 68, 68, 0.1); }
+
+.em-invest-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+
+.em-invest-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  transition: background 0.12s;
+}
+.em-invest-item:hover {
+  background: var(--bg-secondary);
+}
+
+.em-invest-item-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.em-invest-item-base {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.em-invest-item-path {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.em-invest-item-ops {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.14s;
+}
+.em-invest-item:hover .em-invest-item-ops { opacity: 1; }
+
+.em-invest-op {
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s;
+}
+.em-invest-op:hover {
+  color: var(--text-primary);
+  border-color: var(--primary-color);
+}
+.em-invest-op.danger { color: var(--error-color); }
+.em-invest-op.danger:hover { background: rgba(239, 68, 68, 0.1); border-color: var(--error-color); }
+
+/* 空状态 */
+.em-invest-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+}
+.em-invest-empty svg { opacity: 0.4; margin-bottom: 8px; }
+.em-invest-empty p { margin: 4px 0; font-size: 13px; }
+.em-invest-hint { font-size: 11px !important; color: var(--text-disabled); }
+

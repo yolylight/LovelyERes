@@ -278,10 +278,15 @@ pub async fn list_log_files(
             log_files.push(log_analysis::LogFileInfo {
                 path: path.to_string(),
                 name: name.to_string(),
-                size: 0, modified: String::new(), readable: false,
+                size: 0,
+                modified: String::new(),
+                readable: false,
             });
         }
     }
+
+    // 按文件大小降序排序
+    log_files.sort_by(|a, b| b.size.cmp(&a.size));
 
     Ok(log_files)
 }

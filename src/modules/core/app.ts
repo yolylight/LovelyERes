@@ -35,7 +35,7 @@ export interface AppState {
   serverInfo?: ServerInfo; // 新增详细服务器信息
   loading: boolean;
   loadingStep?: string; // 当前连接步骤描述
-  currentPage: 'system-info' | 'ssh-terminal' | 'remote-operations' | 'docker' | 'emergency-commands' | 'log-analysis' | 'settings' | 'kubernetes' | 'database' | 'packet-capture' | 'baseline-quick-edit' | 'java-hot-update' | 'notes' | 'secfix' | 'check-audit' | 'ai-history';
+  currentPage: 'system-info' | 'ssh-terminal' | 'remote-operations' | 'docker' | 'emergency-commands' | 'log-analysis' | 'settings' | 'kubernetes' | 'database' | 'packet-capture' | 'baseline-quick-edit' | 'java-hot-update' | 'notes' | 'secfix' | 'check-audit' | 'ai-history' | 'memshell-scan';
 }
 
 export class LovelyResApp {
@@ -303,10 +303,20 @@ export class LovelyResApp {
       }
 
       // 导航点击事件 (activity-bar-item for VS Code style, nav-item for legacy)
+      const chevItem = target.closest('.sidebar-item-chev');
       const navItem = target.closest('.sidebar-item[data-nav-id], .activity-bar-item[data-nav-id], .nav-item[data-nav-id]');
       if (navItem && navItem.getAttribute('data-nav-id')) {
         const navId = navItem.getAttribute('data-nav-id');
         if (navId) {
+            const wrap = document.querySelector(`.sidebar-item-wrap[data-subtree-id="${navId}"]`);
+            const isCurrentPage = navId === this.stateManager.getState().currentPage;
+
+            // 当具有子树的页面在 DOM 中（或属于当前页面），且用户点击了折叠箭头或在当前页面再次点击主导航项时：执行展开/收起
+            if (wrap && (chevItem || isCurrentPage)) {
+                (window as any).toggleSidebarSubtree && (window as any).toggleSidebarSubtree(navId);
+                return;
+            }
+
             // 检查连接状态
             const state = this.stateManager.getState();
             const isConnected = state.isConnected;

@@ -31,16 +31,25 @@ export class NetworkContextMenu extends BaseContextMenu {
   }
 
   /**
+   * 清理地址中的网卡限定符（如 192.168.126.128%eth0:68 -> 192.168.126.128:68）
+   */
+  private cleanAddress(address: string): string {
+    if (!address) return ''
+    return address.replace(/%[^\s:\]]+(?=\]|:|\s|$)/g, '').trim()
+  }
+
+  /**
    * 提取IP地址（从 IP:Port 格式中提取IP）
    */
   private extractIP(address: string): string {
-    if (address.includes('[')) {
+    const cleaned = this.cleanAddress(address)
+    if (cleaned.includes('[')) {
       // IPv6格式: [::1]:8080
-      const match = address.match(/\[([^\]]+)\]/)
-      return match ? match[1] : address
+      const match = cleaned.match(/\[([^\]]+)\]/)
+      return match ? match[1] : cleaned
     } else {
       // IPv4格式: 192.168.1.1:8080
-      return address.split(':')[0]
+      return cleaned.split(':')[0]
     }
   }
 
@@ -48,7 +57,8 @@ export class NetworkContextMenu extends BaseContextMenu {
    * 提取端口（从 IP:Port 格式中提取端口）
    */
   private extractPort(address: string): string {
-    const parts = address.split(':')
+    const cleaned = this.cleanAddress(address)
+    const parts = cleaned.split(':')
     return parts[parts.length - 1] || ''
   }
 
@@ -444,7 +454,7 @@ export class NetworkContextMenu extends BaseContextMenu {
 
       // 日志查询
       'connection-history': {
-        command: `echo "连接历史 - ${foreignIP}"; echo ""; echo "=== 最近的连接记录 ==="; journalctl -n 100 | grep "${foreignIP}" || echo "无连接历史记录"`,
+        command: `echo "连接历史 - ${foreignIP}"; echo ""; echo "=== 登录与认证记录 ==="; (last -a 2>/dev/null | grep "${foreignIP}" || echo "无 last 登录记录"); echo ""; echo "=== 历史日志记录 ==="; (grep "${foreignIP}" /var/log/auth.log /var/log/secure /var/log/syslog 2>/dev/null || journalctl --no-pager -n 500 2>/dev/null | grep "${foreignIP}") | grep -v -E "COMMAND=.*(grep|journalctl|echo)|sh -c.*echo" | tail -30 || echo "无历史连接日志记录"`,
         title: `连接历史 - ${foreignIP}`,
         actionName: '查看连接历史'
       },
@@ -454,7 +464,7 @@ export class NetworkContextMenu extends BaseContextMenu {
         actionName: '查看访问日志'
       },
       'security-log': {
-        command: `echo "安全日志 - ${foreignIP}"; echo ""; echo "=== 认证日志 ==="; grep "${foreignIP}" /var/log/auth.log 2>/dev/null | tail -20 || grep "${foreignIP}" /var/log/secure 2>/dev/null | tail -20 || echo "无认证日志"; echo ""; echo "=== 系统日志 ==="; journalctl -n 50 | grep "${foreignIP}" || echo "无系统日志"`,
+        command: `echo "安全日志 - ${foreignIP}"; echo ""; echo "=== 认证日志 ==="; (grep "${foreignIP}" /var/log/auth.log 2>/dev/null | tail -20 || grep "${foreignIP}" /var/log/secure 2>/dev/null | tail -20 || echo "无认证日志") | grep -v -E "COMMAND=.*(grep|journalctl|echo)|sh -c.*echo"; echo ""; echo "=== 系统日志 ==="; journalctl -n 200 --no-pager 2>/dev/null | grep "${foreignIP}" | grep -v -E "COMMAND=.*(grep|journalctl|echo)|sh -c.*echo" | tail -20 || echo "无系统日志"`,
         title: `安全日志 - ${foreignIP}`,
         actionName: '查看安全日志'
       },

@@ -81,8 +81,35 @@ impl SSHConnectionManager {
         let content = serde_json::to_string_pretty(connections)
             .map_err(|e| LovelyResError::ConfigError(format!("序列化SSH配置失败: {}", e)))?;
 
-        fs::write(config_file, content)
-            .map_err(|e| LovelyResError::FileError(format!("写入SSH配置文件失败: {}", e)))?;
+        // 保护性检查：若即将用空列表覆盖磁盘上已有的非空配置，先创建备份，
+        // 避免因前端加载失败被重置为空后自动保存而永久丢失所有已保存的密码
+        if connections.is_empty() && config_file.exists() {
+            let existing_non_empty = fs::read_to_string(config_file)
+                .map(|s| {
+                    let trimmed = s.trim();
+                    !trimmed.is_empty() && trimmed != "[]"
+                })
+                .unwrap_or(false);
+            if existing_non_empty {
+                match self.create_backup() {
+                    Ok(name) => println!(
+                        "⚠️ 即将用空列表覆盖已有SSH配置，已创建保护性备份: {}",
+                        name
+                    ),
+                    Err(e) => println!("⚠️ 覆盖前创建保护性备份失败: {}", e),
+                }
+            }
+        }
+
+        // 原子写入：先写入临时文件再重命名，避免写入中断导致整个凭据文件被截断/损坏
+        let tmp_file = config_file.with_extension("json.tmp");
+        fs::write(&tmp_file, &content)
+            .map_err(|e| LovelyResError::FileError(format!("写入临时配置文件失败: {}", e)))?;
+        fs::rename(&tmp_file, config_file).map_err(|e| {
+            // 重命名失败时清理临时文件，避免残留
+            let _ = fs::remove_file(&tmp_file);
+            LovelyResError::FileError(format!("替换SSH配置文件失败: {}", e))
+        })?;
 
         println!("✅ 成功保存 {} 个SSH连接配置", connections.len());
         Ok(())
@@ -137,14 +164,63 @@ impl SSHConnectionManager {
             .map_err(|e| LovelyResError::AuthError(format!("解密结果不是有效UTF-8: {}", e)))
     }
 
+    /// keyring 服务名与条目名，用于在操作系统凭据库中定位加密密钥
+    const KEYRING_SERVICE: &str = "LovelyRes";
+    const KEYRING_ENTRY: &str = "ssh_encryption_key";
+
+    /// 打开操作系统凭据库中的密钥条目
+    fn keyring_entry() -> LovelyResResult<keyring::Entry> {
+        keyring::Entry::new(Self::KEYRING_SERVICE, Self::KEYRING_ENTRY)
+            .map_err(|e| LovelyResError::AuthError(format!("访问系统凭据库失败: {}", e)))
+    }
+
+    /// 将32字节密钥以 base64 形式写入操作系统凭据库
+    fn store_key_in_keyring(key: &[u8; 32]) -> LovelyResResult<()> {
+        let entry = Self::keyring_entry()?;
+        let encoded = general_purpose::STANDARD.encode(key);
+        entry
+            .set_password(&encoded)
+            .map_err(|e| LovelyResError::AuthError(format!("写入系统凭据库失败: {}", e)))
+    }
+
+    /// 从操作系统凭据库读取密钥，未找到时返回 Ok(None)
+    fn load_key_from_keyring() -> LovelyResResult<Option<[u8; 32]>> {
+        let entry = Self::keyring_entry()?;
+        match entry.get_password() {
+            Ok(encoded) => {
+                let bytes = general_purpose::STANDARD
+                    .decode(encoded.trim())
+                    .map_err(|e| LovelyResError::AuthError(format!("凭据库密钥解码失败: {}", e)))?;
+                if bytes.len() != 32 {
+                    return Err(LovelyResError::ConfigError("凭据库密钥长度错误".to_string()));
+                }
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                Ok(Some(key))
+            }
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(LovelyResError::AuthError(format!("读取系统凭据库失败: {}", e))),
+        }
+    }
+
     /// 获取或创建加密密钥
+    ///
+    /// 密钥现在存放在操作系统凭据库（Windows 凭据管理器 / macOS 钥匙串 /
+    /// Linux Secret Service）中，而不是明文文件。若检测到旧版明文
+    /// `encryption.key`，则迁移进凭据库，验证读回一致后删除明文文件。
     fn get_or_create_encryption_key(data_paths: &AppDataPaths) -> LovelyResResult<[u8; 32]> {
+        // 1. 优先从操作系统凭据库读取
+        if let Some(key) = Self::load_key_from_keyring()? {
+            println!("🔑 从系统凭据库加载加密密钥");
+            return Ok(key);
+        }
+
         let key_file = data_paths.app_data_dir.join("encryption.key");
 
+        // 2. 凭据库中没有，但存在旧版明文密钥 → 迁移
         if key_file.exists() {
-            // 加载现有密钥
             let key_data = fs::read(&key_file)
-                .map_err(|e| LovelyResError::FileError(format!("读取加密密钥失败: {}", e)))?;
+                .map_err(|e| LovelyResError::FileError(format!("读取旧版加密密钥失败: {}", e)))?;
 
             if key_data.len() != 32 {
                 return Err(LovelyResError::ConfigError("加密密钥长度错误".to_string()));
@@ -153,20 +229,33 @@ impl SSHConnectionManager {
             let mut key = [0u8; 32];
             key.copy_from_slice(&key_data);
 
-            println!("🔑 加载现有加密密钥");
-            Ok(key)
-        } else {
-            // 生成新密钥
-            let mut key = [0u8; 32];
-            OsRng.fill_bytes(&mut key);
+            // 写入凭据库并读回验证，确认一致后才删除明文文件
+            Self::store_key_in_keyring(&key)?;
+            match Self::load_key_from_keyring()? {
+                Some(stored) if stored == key => {
+                    if let Err(e) = fs::remove_file(&key_file) {
+                        // 删除失败不致命：密钥已安全存入凭据库，仅提示以便手动清理
+                        println!("⚠️ 迁移密钥后删除明文文件失败（请手动删除 {:?}）: {}", key_file, e);
+                    } else {
+                        println!("🔐 已将加密密钥迁移到系统凭据库并删除明文文件");
+                    }
+                }
+                _ => {
+                    return Err(LovelyResError::AuthError(
+                        "迁移加密密钥到系统凭据库后校验失败，已保留明文文件".to_string(),
+                    ));
+                }
+            }
 
-            // 保存密钥
-            fs::write(&key_file, &key)
-                .map_err(|e| LovelyResError::FileError(format!("保存加密密钥失败: {}", e)))?;
-
-            println!("🔑 生成新的加密密钥");
-            Ok(key)
+            return Ok(key);
         }
+
+        // 3. 全新安装：生成新密钥并存入凭据库
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        Self::store_key_in_keyring(&key)?;
+        println!("🔑 生成新的加密密钥并存入系统凭据库");
+        Ok(key)
     }
 
     /// 创建备份

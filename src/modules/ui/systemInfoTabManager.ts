@@ -85,15 +85,26 @@ function showTableLoadingState(tabId: string): void {
   }
 }
 
+// 当前激活的标签页 ID 模块级缓存
+let currentActiveTabId = 'processes';
+
 /**
  * 获取当前活跃标签页的tabId
  */
-function getActiveTabId(): string | null {
+function getActiveTabId(): string {
   const activeTab = document.querySelector('.sidebar-item[data-tab].active');
-  return activeTab ? activeTab.getAttribute('data-tab') : null;
+  if (activeTab) {
+    const tabId = activeTab.getAttribute('data-tab');
+    if (tabId) {
+      currentActiveTabId = tabId;
+      return tabId;
+    }
+  }
+  return currentActiveTabId || 'processes';
 }
 
 function switchSystemInfoTab(tabId: string): void {
+  currentActiveTabId = tabId;
   console.log('🔄 切换系统信息标签页:', tabId);
 
   // 更新主侧边栏中系统信息 tab 叶子的 active 状态，并同步分组高亮
@@ -129,26 +140,25 @@ function switchSystemInfoTab(tabId: string): void {
           if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text-secondary);">获取数据失败或服务未运行</td></tr>';
         });
       } else
-      // 检查此标签页的数据是否已加载
-      if (cache.detailedInfo && cache.detailedInfo[dataKey] &&
-          Array.isArray(cache.detailedInfo[dataKey]) && cache.detailedInfo[dataKey].length > 0) {
-        // 数据已就绪，立即渲染
-        loadSystemInfoTabData(tabId, cache.detailedInfo);
-      } else if (cache.isLoading) {
-        // 正在渐进式加载中，显示加载状态
-        showTableLoadingState(tabId);
-      } else {
-        // 缓存里没有该 tab 的数据（或为空，例如冷连接首批并行采集返回空）：
-        // 定向重新拉取该项自愈，避免被"有效但为空"的全量缓存卡住、非要手动刷新才出数据。
-        showTableLoadingState(tabId);
-        fetchSingleTabData(tabId).then(data => {
-          if (!cache.detailedInfo) cache.detailedInfo = {};
-          cache.detailedInfo[dataKey] = data;
+        // 检查此标签页的数据是否已存在于缓存中（只要属性为 Array 类型）
+        if (cache.detailedInfo && Array.isArray(cache.detailedInfo[dataKey])) {
+          // 数据已就绪，立即渲染（无需阻断在 isLoading 动画）
           loadSystemInfoTabData(tabId, cache.detailedInfo);
-        }).catch(() => {
-          (window as any).loadSystemDetailedInfo();
-        });
-      }
+        } else if (cache.isLoading) {
+          // 正在渐进式加载中且此 tab 尚未回传，显示加载状态
+          showTableLoadingState(tabId);
+        } else {
+          // 缓存里没有该 tab 的数据（或未初始化）：
+          // 定向重新拉取该项自愈，避免卡住。
+          showTableLoadingState(tabId);
+          fetchSingleTabData(tabId).then(data => {
+            if (!cache.detailedInfo) cache.detailedInfo = {};
+            cache.detailedInfo[dataKey] = data;
+            loadSystemInfoTabData(tabId, cache.detailedInfo);
+          }).catch(() => {
+            (window as any).loadSystemDetailedInfo();
+          });
+        }
     }
   }
 }
@@ -169,6 +179,13 @@ async function loadSystemDetailedInfo(forceRefresh = false): Promise<any> {
     if (!forceRefresh && cacheValid && !cache.isLoading) {
       console.log('📋 使用缓存的系统详细信息');
       const activeTabId = getActiveTabId() || 'processes';
+      const contentContainer = document.getElementById('system-info-content');
+      if (contentContainer && (window as any).app?.modernUIRenderer) {
+        const currentContent = contentContainer.innerHTML;
+        if (!currentContent || !currentContent.includes(`id="${activeTabId}-table-body"`)) {
+          contentContainer.innerHTML = (window as any).app.modernUIRenderer.renderSystemInfoTab(activeTabId);
+        }
+      }
       loadSystemInfoTabData(activeTabId, cache.detailedInfo);
       const app = (window as any).app;
       if (app?.modernUIRenderer?.updateSystemInfoTabs) {
@@ -222,11 +239,11 @@ async function loadSystemDetailedInfo(forceRefresh = false): Promise<any> {
             app.modernUIRenderer.updateSystemInfoTabs(cache.detailedInfo);
           }
 
-          // 如果此数据对应当前活跃标签页，立即渲染表格
+          // 如果此数据对应当前活跃标签页，或者活跃标签页的数据已在缓存中，更新 UI
           const activeTabId = getActiveTabId();
           if (activeTabId) {
             const activeDataKey = dataKeyMap[activeTabId];
-            if (activeDataKey === key) {
+            if (activeDataKey === key || (cache.detailedInfo[activeDataKey] && Array.isArray(cache.detailedInfo[activeDataKey]))) {
               loadSystemInfoTabData(activeTabId, cache.detailedInfo);
             }
           }
@@ -400,6 +417,87 @@ async function fetchSingleTabData(tabId: string): Promise<any[]> {
   return await mgr.fetchSingleKey(key);
 }
 
+/**
+ * 智能解析 ss 或 netstat 输出的 Socket 连接单行文本
+ */
+function parseSocketRow(line: string) {
+  const str = line.trim();
+  if (!str) return null;
+
+  // 匹配形如 192.168.1.1:22, [::ffff:192.168.1.1]:80, *:80, 0.0.0.0:443, :::22, :::* 的 Socket 地址模式
+  const socketRegex = /(?:\[[0-9a-fA-F:]+\]|[0-9a-fA-F.]+|\*):[0-9*]+/g;
+  const matches = str.match(socketRegex) || [];
+
+  if (matches.length === 0) return null;
+
+  const localFull = matches[0] || '';
+  const remoteFull = matches[1] || '';
+
+  // 拆分 local 地址与端口
+  let localAddr = '';
+  let localPort = '';
+  if (localFull) {
+    const lastColon = localFull.lastIndexOf(':');
+    localAddr = localFull.substring(0, lastColon).replace(/^\[|\]$/g, '');
+    localPort = localFull.substring(lastColon + 1);
+    if (localPort === '*') localPort = '';
+  }
+
+  // 拆分 remote 地址与端口
+  let remoteAddr = '';
+  let remotePort = '';
+  if (remoteFull) {
+    const lastColon = remoteFull.lastIndexOf(':');
+    remoteAddr = remoteFull.substring(0, lastColon).replace(/^\[|\]$/g, '');
+    remotePort = remoteFull.substring(lastColon + 1);
+    if (remotePort === '*') remotePort = '';
+  }
+
+  // 提取 PID
+  let pid = '';
+  const pidMatch = str.match(/pid=(\d+)/) || str.match(/\b(\d+)\/[^\s]+/);
+  if (pidMatch) {
+    pid = pidMatch[1];
+  }
+
+  // 提取进程名
+  let processName = '';
+  const ssNameMatch = str.match(/"([^"]+)"\s*,\s*pid=/) || str.match(/"([^"]+)"/) || str.match(/users:\s*\(\(\s*"([^"]+)"/);
+  const netstatNameMatch = str.match(/\b\d+\/([^\s]+)/);
+
+  if (ssNameMatch && ssNameMatch[1]) {
+    processName = ssNameMatch[1];
+  } else if (netstatNameMatch && netstatNameMatch[1]) {
+    processName = netstatNameMatch[1];
+  } else if (pid) {
+    const procMatch = str.match(/users:\s*\(\((.+)\)\)/) || str.match(/\s+([^\s]+)$/);
+    if (procMatch) {
+      processName = procMatch[1].replace(/["\(\)]/g, '').trim();
+    }
+  }
+
+  // 协议
+  let proto = 'tcp';
+  if (/\budp\b/i.test(str) || /^udp/i.test(str)) {
+    proto = 'udp';
+  } else if (/\btcp\b/i.test(str) || /^tcp/i.test(str)) {
+    proto = 'tcp';
+  }
+
+  return {
+    proto,
+    localFull,
+    localAddr,
+    localPort,
+    remoteFull,
+    remoteAddr,
+    remotePort,
+    pid,
+    process: processName,
+    user: '-'
+  };
+}
+
 async function fetchExtraTabData(tabId: string): Promise<any[]> {
   const { invoke } = await import('@tauri-apps/api/core');
   const exec = async (cmd: string) => {
@@ -442,30 +540,20 @@ async function fetchExtraTabData(tabId: string): Promise<any[]> {
     // 所有监听端口 + 进程
     const out = await exec("ss -tlnp 2>/dev/null | tail -n +2 | head -50 || netstat -tlnp 2>/dev/null | tail -n +2 | head -50");
     return out.split('\n').filter(Boolean).map((line: string) => {
-      const parts = line.trim().split(/\s+/);
-      const local = parts[3] || '';
-      const [addr, port] = local.includes(':') ? [local.substring(0, local.lastIndexOf(':')), local.substring(local.lastIndexOf(':') + 1)] : ['', local];
-      const proc = parts[5] || parts[6] || '';
-      const pidMatch = proc.match(/pid=(\d+)/);
-      const nameMatch = proc.match(/\("([^"]+)"/);
-      return { proto: parts[0] || 'tcp', addr, port, pid: pidMatch?.[1] || '', process: nameMatch?.[1] || proc, user: '' };
-    });
+      const parsed = parseSocketRow(line);
+      if (!parsed) return null;
+      return { proto: parsed.proto, addr: parsed.localAddr, port: parsed.localPort, pid: parsed.pid, process: parsed.process, user: '' };
+    }).filter(Boolean);
   }
 
   if (tabId === 'established') {
     // 外连排查: ESTABLISHED 连接
     const out = await exec("ss -tnp state established 2>/dev/null | tail -n +2 | head -50 || netstat -tnp 2>/dev/null | grep ESTABLISHED | head -50");
     return out.split('\n').filter(Boolean).map((line: string) => {
-      const parts = line.trim().split(/\s+/);
-      const local = parts[3] || '';
-      const remote = parts[4] || '';
-      const remotePort = remote.includes(':') ? remote.substring(remote.lastIndexOf(':') + 1) : '';
-      const remoteAddr = remote.includes(':') ? remote.substring(0, remote.lastIndexOf(':')) : remote;
-      const proc = parts[5] || parts[6] || '';
-      const pidMatch = proc.match(/pid=(\d+)/);
-      const nameMatch = proc.match(/\("([^"]+)"/);
-      return { local, remote: remoteAddr, remotePort, pid: pidMatch?.[1] || '', process: nameMatch?.[1] || proc, user: '' };
-    });
+      const parsed = parseSocketRow(line);
+      if (!parsed) return null;
+      return { local: parsed.localFull, remote: parsed.remoteAddr, remotePort: parsed.remotePort, pid: parsed.pid, process: parsed.process, user: '' };
+    }).filter(Boolean);
   }
 
   if (tabId === 'autoruns') {
@@ -483,12 +571,43 @@ async function fetchExtraTabData(tabId: string): Promise<any[]> {
 
   if (tabId === 'rootcheck') {
     // Rootkit 快速检查
-    const out = await exec(`echo "CHECK|LD_PRELOAD|" && (cat /etc/ld.so.preload 2>/dev/null | head -3 || echo "CHECK|LD_PRELOAD|clean") && echo "CHECK|SUID异常|" && find /usr/bin /usr/sbin /bin /sbin -perm -4000 -type f 2>/dev/null | xargs file 2>/dev/null | grep -E "script|text" | head -5 && echo "CHECK|隐藏进程|" && (ps aux | wc -l; ls /proc/ | grep -E '^[0-9]+$' | wc -l) && echo "CHECK|内核模块|" && lsmod 2>/dev/null | grep -v -E '^Module|^ip|^nf|^x_|^xt_|^br_|^overlay|^veth' | head -10 && echo "CHECK|PAM后门|" && find /lib/security /lib64/security -name '*.so' -mmin -10080 2>/dev/null | head -5 && echo "CHECK|SSH后门|" && (strings /usr/sbin/sshd 2>/dev/null | grep -ic 'backdoor\\|secret\\|hack' || echo "0")`);
+    const out = await exec(`
+# LD_PRELOAD
+preload=$(cat /etc/ld.so.preload 2>/dev/null | tr '\\n' ' ' | xargs)
+if [ -n "$preload" ]; then echo "ROW|LD_PRELOAD|suspicious|/etc/ld.so.preload 存在内容: $preload"; else echo "ROW|LD_PRELOAD|clean|/etc/ld.so.preload 为空或不存在"; fi
+# SUID脚本
+suid_scripts=$(find /usr/bin /usr/sbin /bin /sbin -perm -4000 -type f 2>/dev/null | xargs file 2>/dev/null | grep -E "script|text" | awk -F: '{print $1}' | tr '\\n' ' ')
+if [ -n "$suid_scripts" ]; then echo "ROW|SUID脚本|suspicious|以下SUID文件为脚本(可被利用): $suid_scripts"; else echo "ROW|SUID脚本|clean|未发现SUID脚本文件"; fi
+# 隐藏进程
+ps_cnt=$(ps -eo pid --no-headers 2>/dev/null | wc -l)
+proc_cnt=$(ls /proc/ 2>/dev/null | grep -cE '^[0-9]+$')
+diff=$((proc_cnt - ps_cnt))
+if [ "$diff" -gt 3 ]; then echo "ROW|隐藏进程|suspicious|/proc下PID数($proc_cnt)比ps输出($ps_cnt)多\${diff}个，可能存在隐藏进程"; else echo "ROW|隐藏进程|clean|ps进程数($ps_cnt)与/proc PID数($proc_cnt)基本一致"; fi
+# 可疑内核模块: 匹配已知rootkit名称，或modinfo查不到磁盘文件(疑似注入的隐藏模块)
+km_out=$(lsmod 2>/dev/null | awk 'NR>1 {print $1}' | while read name; do
+  low=$(echo "$name" | tr 'A-Z' 'a-z')
+  case "$low" in
+    *rootkit*|*diamorphine*|*reptile*|*suterusu*|*adore*|*knark*|*modhide*|*hide*|*kbeast*|*enyelkm*|*azazel*|*bdvl*|*rkit*)
+      echo "ROW|内核模块|suspicious|模块 $name 名称匹配已知rootkit特征，高度可疑，请用 modinfo $name 确认" ;;
+    *)
+      if ! modinfo "$name" >/dev/null 2>&1; then
+        echo "ROW|内核模块|suspicious|模块 $name 已加载但 modinfo 查不到磁盘文件，疑似注入的隐藏模块"
+      fi ;;
+  esac
+done)
+if [ -n "$km_out" ]; then echo "$km_out"; else echo "ROW|内核模块|clean|未发现名称匹配rootkit特征或无磁盘文件的可疑模块"; fi
+# PAM后门
+pam_new=$(find /lib/security /lib64/security /usr/lib/security /usr/lib64/security -name '*.so' -newer /etc/passwd 2>/dev/null | head -5)
+if [ -n "$pam_new" ]; then echo "ROW|PAM后门|suspicious|发现近期修改的PAM模块(比/etc/passwd新): $pam_new"; else echo "ROW|PAM后门|clean|未发现异常PAM模块"; fi
+# SSH后门
+ssh_matches=$(strings /usr/sbin/sshd 2>/dev/null | grep -iE 'backdoor|secret_pass|h4ck|r00t' | head -3 | tr '\\n' '; ')
+if [ -n "$ssh_matches" ]; then echo "ROW|SSH后门|suspicious|sshd二进制中发现可疑字符串: $ssh_matches"; else echo "ROW|SSH后门|clean|sshd二进制未发现已知后门特征字符串"; fi
+`);
     const items: any[] = [];
-    let check = '';
     out.split('\n').filter(Boolean).forEach((line: string) => {
-      if (line.startsWith('CHECK|')) { const p = line.split('|'); check = p[1] || ''; if (p[2]) items.push({ check, result: p[2], detail: '' }); return; }
-      items.push({ check, result: line.includes('clean') || line.trim() === '0' ? 'clean' : 'suspicious', detail: line });
+      if (!line.startsWith('ROW|')) return;
+      const p = line.split('|');
+      items.push({ check: p[1] || '', result: p[2] || '', detail: p.slice(3).join('|') || '' });
     });
     return items;
   }
@@ -522,6 +641,7 @@ export function initSystemInfoTabManager(): void {
     isLoading: false
   };
 
+  (window as any).getActiveTabId = getActiveTabId;
   (window as any).switchSystemInfoTab = switchSystemInfoTab;
   (window as any).loadSystemDetailedInfo = loadSystemDetailedInfo;
   (window as any).loadSystemInfoTabData = loadSystemInfoTabData;

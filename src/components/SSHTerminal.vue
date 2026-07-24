@@ -568,12 +568,25 @@ const initializeTerminal = (terminalInstance: TerminalInstance) => {
   terminalInstance.terminal.open(terminalElement)
   terminalInstance.fitAddon.fit()
 
+  // 打开后立即聚焦，让新建/切换的终端无需手动点击即可输入
+  if (terminalInstance.id === activeTerminalId.value) {
+    terminalInstance.terminal.focus()
+  }
+
   // 显示欢迎信息
 
 
   // 设置终端输入处理
   terminalInstance.terminal.onData((data) => {
     handleTerminalInput(terminalInstance.id, data)
+  })
+
+  // 终端尺寸变化时同步到后端 PTY（fit() 改变 cols/rows 后触发）
+  // 修复：窗口切换/缩放后远端按旧尺寸换行，导致显示错乱、字符缺失
+  terminalInstance.terminal.onResize(({ cols, rows }) => {
+    if (!terminalInstance.isConnected) return
+    invoke('ssh_resize_terminal', { terminalId: terminalInstance.id, cols, rows })
+      .catch((error) => console.warn('同步终端尺寸到后端失败:', error))
   })
 
   // 监听窗口大小变化（防抖 100ms 避免高频 resize）
@@ -842,16 +855,23 @@ const handleTerminalInput = async (terminalId: string, data: string) => {
 
 // 连接到 SSH
 const connectToSSH = async (terminalInstance: TerminalInstance) => {
+  const urlSessionId = new URLSearchParams(window.location.search).get('sessionId') || undefined
   try {
     connectionStatus.value = 'connecting'
-
 
     // 检查是否有活动的 SSH 连接（优先使用全局连接管理器，缺失则回退到后端状态）
     let isBackendConnected = false
     let connectionInfo: any = null
 
     const sshConnectionManager = (window as any).sshConnectionManager
-    if (sshConnectionManager && typeof sshConnectionManager.isConnected === 'function') {
+    if (urlSessionId) {
+      // 独立终端窗口：URL 已指定目标会话，直接信任，避免依赖全局单例被其他会话覆盖
+      isBackendConnected = true
+      try {
+        const status: any = await invoke('ssh_get_session_status', { sessionId: urlSessionId })
+        if (status) connectionInfo = status
+      } catch { /* 状态查询失败不阻断，后端仍按 sessionId 创建 */ }
+    } else if (sshConnectionManager && typeof sshConnectionManager.isConnected === 'function') {
       isBackendConnected = !!sshConnectionManager.isConnected()
       connectionInfo = sshConnectionManager.getConnectionStatus?.() || null
     } else {
@@ -887,7 +907,8 @@ const connectToSSH = async (terminalInstance: TerminalInstance) => {
     await invoke('ssh_create_terminal_session', {
       terminalId: terminalInstance.id,
       cols: terminalInstance.terminal.cols,
-      rows: terminalInstance.terminal.rows
+      rows: terminalInstance.terminal.rows,
+      sessionId: urlSessionId,
     })
 
     terminalInstance.isConnected = true
@@ -933,7 +954,8 @@ const connectToSSH = async (terminalInstance: TerminalInstance) => {
           await invoke('ssh_create_terminal_session', {
             terminalId: terminalInstance.id,
             cols: terminalInstance.terminal.cols,
-            rows: terminalInstance.terminal.rows
+            rows: terminalInstance.terminal.rows,
+            sessionId: urlSessionId,
           })
 
           terminalInstance.isConnected = true
@@ -1000,24 +1022,41 @@ const startReceivingOutput = (terminalInstance: TerminalInstance) => {
   })
 }
 
+// 让指定终端重新适配尺寸、强制重绘并聚焦输入
+// - fit(): 重新测量尺寸
+// - refresh(): 强制全量重绘，修复隐藏(display:none)/窗口切换后残留的字符缺失
+// - focus(): 让 xterm 的输入 textarea 重新捕获键盘输入，无需手动点击
+const activateTerminalInstance = (terminalInstance: TerminalInstance) => {
+  nextTick(() => {
+    try {
+      const term = terminalInstance.terminal
+      // 确保终端已经挂载到DOM并且可见
+      if (term && terminalInstance.fitAddon && term.element && term.element.offsetParent) {
+        terminalInstance.fitAddon.fit()
+        // 强制重绘整个可视区域，避免多次切换后出现字符缺失/花屏
+        term.refresh(0, term.rows - 1)
+        term.focus()
+      }
+    } catch (error) {
+      console.warn('终端激活失败:', error)
+    }
+  })
+}
+
+// 聚焦并重绘当前活动终端（用于窗口重新获得焦点等场景）
+const focusActiveTerminal = () => {
+  const terminalInstance = terminals.value.find(t => t.id === activeTerminalId.value)
+  if (terminalInstance) {
+    activateTerminalInstance(terminalInstance)
+  }
+}
+
 // 切换终端
 const switchTerminal = (terminalId: string) => {
   activeTerminalId.value = terminalId
   const terminalInstance = terminals.value.find(t => t.id === terminalId)
   if (terminalInstance) {
-    // 重新调整终端大小
-    nextTick(() => {
-      try {
-        // 确保终端已经挂载到DOM并且可见
-        if (terminalInstance.terminal && terminalInstance.fitAddon &&
-            terminalInstance.terminal.element &&
-            terminalInstance.terminal.element.offsetParent) {
-          terminalInstance.fitAddon.fit()
-        }
-      } catch (error) {
-        console.warn('终端 resize 失败:', error)
-      }
-    })
+    activateTerminalInstance(terminalInstance)
   }
 }
 
@@ -1986,6 +2025,8 @@ const pasteFromClipboard = async () => {
       const activeTerminal = terminals.value.find(t => t.id === activeTerminalId.value)
       if (activeTerminal) {
         await handleTerminalInput(activeTerminal.id, text)
+        // 粘贴后重新聚焦终端，让用户可继续输入，无需再次点击
+        activeTerminal.terminal.focus()
         console.log('✅ 已粘贴文本:', text)
       }
     }
@@ -2069,12 +2110,28 @@ const handleAccountChange = () => {
   }
 }
 
+// 窗口重新获得焦点时：聚焦并重绘当前终端
+// 修复：切换窗口回来后需手动点击才能输入、以及多次切换后字符缺失
+const handleWindowFocus = () => {
+  focusActiveTerminal()
+}
+
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'visible') {
+    focusActiveTerminal()
+  }
+}
+
 // 组件挂载时创建第一个终端
 onMounted(() => {
   createNewTerminal()
   // 添加全局快捷键监听
   document.addEventListener('keydown', handleKeydown, true) // 使用捕获阶段
   console.log('✅ SSH终端快捷键监听器已添加')
+
+  // 监听窗口焦点/可见性变化，切回窗口时自动聚焦并重绘终端
+  window.addEventListener('focus', handleWindowFocus)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 
   // 添加额外的调试监听器
   document.addEventListener('keydown', (event) => {
@@ -2097,6 +2154,10 @@ onUnmounted(() => {
   // 移除快捷键监听
   document.removeEventListener('keydown', handleKeydown, true)
   console.log('✅ SSH终端快捷键监听器已移除')
+
+  // 移除窗口焦点/可见性监听
+  window.removeEventListener('focus', handleWindowFocus)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 
   // 清理命令提示定时器
   if (hintTimeout.value) {

@@ -100,10 +100,6 @@ export class ServerModalRenderer {
 
             <div class="sc-wfield" id="scw-auth-password">
               <label for="scw-password">密码</label>
-              <div id="scw-password-saved-wrapper" style="display: none; align-items: center; justify-content: space-between; border: 1px solid var(--border-color); padding: 4px 10px; border-radius: 4px; background: var(--bg-hover); margin-top: 4px;">
-                <span style="color: var(--text-secondary); font-size: 13px;">•••••••• (密码已保存)</span>
-                <button type="button" class="sc-mini-btn" style="margin: 0; padding: 2px 6px;" onclick="document.getElementById('scw-password-saved-wrapper').style.display='none'; document.getElementById('scw-password-input-wrapper').style.display='block'; (document.getElementById('scw-password') as HTMLInputElement).focus();">修改密码</button>
-              </div>
               <div id="scw-password-input-wrapper" class="sc-input-eye">
                 <input id="scw-password" class="sc-underline" type="password" placeholder="请输入密码"
                        onkeydown="if(event.key==='Enter')window.scConnectForm?.()">
@@ -257,19 +253,9 @@ export class ServerModalRenderer {
             <div id="sc-auth-password" style="${authType === 'key' ? 'display:none' : ''}">
               <div class="sc-field">
                 <label>密码</label>
-                ${d.encryptedPassword ? `
-                  <div class="password-saved-wrapper" id="sc-password-saved-wrapper" style="display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 4px; background: var(--bg-hover); margin-top: 4px;">
-                    <span style="color: var(--text-secondary); font-size: 13px;">•••••••• (密码已保存)</span>
-                    <button type="button" class="sc-mini-btn" style="margin: 0; padding: 2px 8px;" onclick="document.getElementById('sc-password-saved-wrapper').style.display='none'; document.getElementById('sc-password-input-wrapper').style.display='block'; (document.getElementById('sc-password') as HTMLInputElement).focus();">修改密码</button>
-                  </div>
-                  <div id="sc-password-input-wrapper" style="display: none;">
-                    <input id="sc-password" type="password" placeholder="请输入新密码">
-                  </div>
-                ` : `
-                  <div id="sc-password-input-wrapper">
-                    <input id="sc-password" type="password" placeholder="SSH 密码">
-                  </div>
-                `}
+                <div id="sc-password-input-wrapper">
+                  <input id="sc-password" type="password" placeholder="${d.encryptedPassword ? '••••••••' : 'SSH 密码'}">
+                </div>
               </div>
             </div>
             <div id="sc-auth-key" style="${authType === 'password' ? 'display:none' : ''}">

@@ -14,7 +14,12 @@ import mitt from 'mitt';
 
 export type AppEvents = {
   // 通知
-  'notification': { message: string; type: 'success' | 'error' | 'info' | 'warning'; title?: string };
+  'notification': {
+    message: string;
+    type: 'success' | 'error' | 'info' | 'warning';
+    title?: string;
+    options?: { duration?: number; copyable?: boolean; closable?: boolean } | number;
+  };
 
   // 页面切换
   'page:switch': { pageId: string };

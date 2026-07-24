@@ -6,6 +6,7 @@
 import {
   baselineCategories,
   resolveForDistro,
+  parseBaselineValue,
   type BaselineCategory,
   type BaselineConfigItem,
 } from './baselineConfigs';
@@ -123,6 +124,12 @@ export class BaselineQuickEditManager {
         case 'exec-quick-action':
           this.executeQuickAction(actionEl.getAttribute('data-bl-qa-id') || '');
           break;
+        case 'copy-inspect-result':
+          this.copyInspectResult(itemId);
+          break;
+        case 'open-inspect-file':
+          this.openFileFromInspect(actionEl.getAttribute('data-bl-filepath') || '');
+          break;
       }
     });
 
@@ -181,7 +188,37 @@ export class BaselineQuickEditManager {
       el.classList.toggle('active', el.getAttribute('data-bl-category') === categoryId);
     });
 
+    const category = baselineCategories.find(c => c.id === categoryId);
+    const recommendBtn = document.getElementById('bl-btn-recommend-all');
+    if (recommendBtn) {
+      if (category?.isReadOnly) {
+        recommendBtn.style.display = 'none';
+      } else {
+        recommendBtn.style.display = 'flex';
+      }
+    }
+
     await this.loadCategoryValues(categoryId);
+  }
+
+  // ─── 只读排查辅助动作 ───
+
+  private copyInspectResult(itemId: string): void {
+    const codeEl = document.getElementById(`bl-current-${itemId}`);
+    if (!codeEl) return;
+    const text = codeEl.textContent || '';
+    navigator.clipboard.writeText(text).then(() => {
+      window.showNotification?.('排查结果已成功复制到剪贴板', 'success');
+    }).catch(err => {
+      window.showNotification?.('复制失败: ' + String(err), 'error');
+    });
+  }
+
+  private openFileFromInspect(filePath: string): void {
+    if (!filePath) return;
+    this.switchMode('editor' as any);
+    this.openFile(filePath);
+    window.showNotification?.(`已在文件编辑器中打开: ${filePath}`, 'info');
   }
 
   // ─── 读取配置值 ───
@@ -202,17 +239,20 @@ export class BaselineQuickEditManager {
     `;
 
     try {
-      // 批量读取所有配置项的当前值（使用发行版感知的命令）
+      // 批量读取所有配置项的当前值（使用发行版感知的命令），并设置 15s 硬超时防护
       const commands = category.items.map(item => resolveForDistro(item, this.detectedDistro).readCommand);
-      const results = await this.executeBatchCommands(commands);
+      const results = await Promise.race([
+        this.executeBatchCommands(commands),
+        new Promise<string[]>((_, reject) =>
+          setTimeout(() => reject(new Error('读取服务器配置超时，请检查服务器连接或数据库服务状态')), 15000)
+        ),
+      ]);
 
       // 解析结果
       for (let i = 0; i < category.items.length; i++) {
         const item = category.items[i];
         const output = results[i] || '';
-        const regex = new RegExp(item.parseRegex, 'i');
-        const match = output.match(regex);
-        const value = match ? match[1].trim() : 'not set';
+        const value = parseBaselineValue(item.parseRegex, output, !!category.isReadOnly);
         this.currentValues.set(item.id, value);
       }
 
@@ -546,16 +586,25 @@ export class BaselineQuickEditManager {
     if (!statusEl) return;
 
     let nonCompliantCount = 0;
+    let isServiceMissing = false;
+
     for (const item of category.items) {
       const val = this.currentValues.get(item.id) ?? '';
+      const isUninstalled = val.includes('未检测到') || val.includes('未安装') || val.includes('不可用') || val.includes('读取失败');
+      if (isUninstalled) {
+        isServiceMissing = true;
+        continue; // 未安装的服务不作为配置不合规告警
+      }
       const skipRecommended = ['按需设置', '按需配置', '无 NOPASSWD 条目', '非默认端口'];
-      if (val && val !== 'not set' && val !== 'unknown' && val !== '...' && !skipRecommended.includes(item.recommendedValue) && val !== item.recommendedValue) {
+      if (val && val !== 'not set' && val !== 'unknown' && val !== '...' && !!item.recommendedValue && !skipRecommended.includes(item.recommendedValue) && val !== item.recommendedValue) {
         nonCompliantCount++;
       }
     }
 
     if (nonCompliantCount > 0) {
       statusEl.innerHTML = `<span style="color: #f97316; font-weight: 600;">⚠${nonCompliantCount}</span>`;
+    } else if (isServiceMissing) {
+      statusEl.innerHTML = `<span style="color: #9ca3af;" title="未安装或未运行该数据库/服务">—</span>`;
     } else {
       statusEl.innerHTML = `<span style="color: #22c55e;">✓</span>`;
     }

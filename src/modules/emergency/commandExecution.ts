@@ -68,10 +68,10 @@ export function classifyCommandResult(raw: RawCommandExecutionResult, fallbackCo
     success = false;
     message = '权限不足或需要交互式认证';
   } else if (
-    lower.includes('command not found') ||
-    lower.includes('not installed') ||
-    lower.includes('not available') ||
-    lower.includes('no such file or directory')
+    exitCode !== null && exitCode !== 0 &&
+    (lower.includes('command not found') ||
+     lower.includes('not installed') ||
+     lower.includes('no such file or directory'))
   ) {
     kind = 'missingCommand';
     success = false;

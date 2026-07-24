@@ -1451,18 +1451,38 @@ pub fn detect_immutable_files(manager: &SSHManagerRussh) -> Result<Vec<String>, 
 
 /// 内存马排查
 pub fn detect_memshell(manager: &SSHManagerRussh) -> Result<GenericDetectionResult, String> {
+    detect_memshell_inner(manager, |_| {})
+}
+
+/// 内存马排查（带进度回调），progress 回调用于向前端输出排查过程信息
+pub fn detect_memshell_with_progress<F: Fn(&str)>(
+    manager: &SSHManagerRussh,
+    progress: F,
+) -> Result<GenericDetectionResult, String> {
+    detect_memshell_inner(manager, progress)
+}
+
+fn detect_memshell_inner<F: Fn(&str)>(
+    manager: &SSHManagerRussh,
+    progress: F,
+) -> Result<GenericDetectionResult, String> {
     let mut issues = Vec::new();
 
     // 1. 检查运行中的 Java 进程
+    progress("[1/5] 正在枚举运行中的 Java 进程...");
     let java_cmd = "ps -ef | grep java | grep -v grep || echo 'NO_JAVA'";
     let java_result = manager.execute_command(java_cmd)?;
     let java_output = java_result.output.trim();
 
     if java_output.contains("NO_JAVA") || java_output.is_empty() {
+        progress("未发现运行中的 Java 进程，排查结束。");
         return Ok(GenericDetectionResult { issues });
     }
+    let java_proc_count = java_output.lines().count();
+    progress(&format!("发现 {} 个 Java 进程。", java_proc_count));
 
     // 2. 检查 Java 进程启动参数中的 Java Agent
+    progress("[2/5] 正在检查 Java Agent 挂载情况...");
     let mut has_java_agent = false;
     let mut suspicious_agents = Vec::new();
     for line in java_output.lines() {
@@ -1477,6 +1497,7 @@ pub fn detect_memshell(manager: &SSHManagerRussh) -> Result<GenericDetectionResu
     }
 
     if has_java_agent {
+        progress(&format!("检测到 Java Agent 挂载: {:?}", suspicious_agents));
         issues.push(SecurityIssue {
             title: "检测到 Java Agent 挂载".to_string(),
             description: format!("发现 Java 进程挂载了代理: {:?}", suspicious_agents),
@@ -1484,14 +1505,18 @@ pub fn detect_memshell(manager: &SSHManagerRussh) -> Result<GenericDetectionResu
             recommendation: "确认该 Java Agent 是否为授权的安全监控（如 RASP）或 APM 工具，防范恶意 Java Agent 内存马驻留。".to_string(),
             details: Some(java_output.to_string()),
         });
+    } else {
+        progress("未发现 Java Agent 挂载。");
     }
 
     // 3. 检查 JVM 进程的文件句柄，查找已删除的可疑 JAR/Class 文件 (FD泄露检测)
+    progress("[3/5] 正在检查 JVM 进程句柄中已删除的 JAR/Class 文件...");
     let fd_cmd = "find /proc/*/fd/ -type l 2>/dev/null | xargs ls -l 2>/dev/null | grep -E '\\.jar|\\.class' | grep 'deleted' || echo 'CLEAN'";
     let fd_result = manager.execute_command(fd_cmd)?;
     let fd_output = fd_result.output.trim();
 
     if !fd_output.contains("CLEAN") && !fd_output.is_empty() {
+        progress("发现指向已删除 JAR/Class 文件的句柄，疑似不落地内存马！");
         issues.push(SecurityIssue {
             title: "检测到 JVM 进程占用已删除的 JAR/Class 文件".to_string(),
             description: "发现有 Java 进程的文件句柄指向已删除的 jar 或 class 文件，这是不落地内存马的典型特征。".to_string(),
@@ -1499,15 +1524,19 @@ pub fn detect_memshell(manager: &SSHManagerRussh) -> Result<GenericDetectionResu
             recommendation: "使用 lsof -p <PID> 详细排查该进程，检查其加载的类，必要时在隔离环境下 Dump JVM 内存进行分析。".to_string(),
             details: Some(fd_output.to_string()),
         });
+    } else {
+        progress("未发现已删除的 JAR/Class 句柄。");
     }
 
     // 4. 扫描 Web 目录下最近修改且包含敏感关键字的 JSP/JSPX 文件 (注入器/后门检测)
+    progress("[4/5] 正在扫描 Web 目录下的可疑 JSP/JSPX 注入器脚本...");
     let scan_dirs = ["/var/www", "/usr/local/tomcat/webapps", "/opt", "/tmp"];
     let mut jsp_findings = Vec::new();
     for dir in &scan_dirs {
         let dir_exists_cmd = format!("test -d {} && echo 'YES' || echo 'NO'", dir);
         let dir_exists = manager.execute_command(&dir_exists_cmd)?.output.trim().to_string();
         if dir_exists == "YES" {
+            progress(&format!("  扫描目录 {} ...", dir));
             let grep_jsp_cmd = format!(
                 "find {} -type f -name '*.jsp' -o -name '*.jspx' 2>/dev/null | xargs grep -l -E 'defineClass|ClassLoader|base64|Cipher|AES|exec|getRuntime' 2>/dev/null | head -10 || echo 'NONE'",
                 dir
@@ -1523,6 +1552,7 @@ pub fn detect_memshell(manager: &SSHManagerRussh) -> Result<GenericDetectionResu
     }
 
     if !jsp_findings.is_empty() {
+        progress(&format!("发现 {} 个可疑 JSP/JSPX 脚本！", jsp_findings.len()));
         issues.push(SecurityIssue {
             title: "发现可疑内存马注入器脚本".to_string(),
             description: format!("在 Web 目录下发现包含敏感执行/反射关键字的 JSP/JSPX 脚本: {:?}", jsp_findings),
@@ -1530,9 +1560,12 @@ pub fn detect_memshell(manager: &SSHManagerRussh) -> Result<GenericDetectionResu
             recommendation: "立即隔离相关文件，检查其内容是否为 WebShell 或内存马注入器（如哥斯拉、冰蝎等工具）。".to_string(),
             details: Some(jsp_findings.join("\n")),
         });
+    } else {
+        progress("未发现可疑 JSP/JSPX 脚本。");
     }
 
     // 5. 检查 Tomcat/Nginx 访问日志中异常的静态资源 POST 流量 (流量行为异常)
+    progress("[5/5] 正在分析访问日志中的异常静态资源 POST 流量...");
     let log_dirs = ["/var/log/nginx", "/usr/local/tomcat/logs", "/var/log/tomcat*"];
     let mut log_issues = Vec::new();
     for dir in &log_dirs {
@@ -1554,6 +1587,7 @@ pub fn detect_memshell(manager: &SSHManagerRussh) -> Result<GenericDetectionResu
     }
 
     if !log_issues.is_empty() {
+        progress("在访问日志中发现异常静态资源 POST 请求！");
         issues.push(SecurityIssue {
             title: "访问日志中存在异常静态资源 POST 请求".to_string(),
             description: "在 web 访问日志中发现有 POST 请求发送至静态资源（如 favicon.ico、html、js 等），可能存在内存马通信行为。".to_string(),
@@ -1561,7 +1595,10 @@ pub fn detect_memshell(manager: &SSHManagerRussh) -> Result<GenericDetectionResu
             recommendation: "核实这些 POST 请求的源 IP 和请求体。如果不是合法的服务接口，说明该资源可能已被篡改或绑定了 Filter/Servlet 内存马。".to_string(),
             details: Some(log_issues.join("\n\n")),
         });
+    } else {
+        progress("未发现异常静态资源 POST 流量。");
     }
 
+    progress(&format!("排查完成，共发现 {} 项风险。", issues.len()));
     Ok(GenericDetectionResult { issues })
 }

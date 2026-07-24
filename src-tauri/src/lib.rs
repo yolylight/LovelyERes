@@ -137,6 +137,7 @@ pub fn run() {
             commands::ssh_commands::ssh_close_terminal_session,
             commands::ssh_commands::ssh_close_all_terminal_sessions,
             commands::ssh_commands::ssh_send_input,
+            commands::ssh_commands::ssh_resize_terminal,
             commands::ssh_commands::ssh_get_completion,
             commands::ssh_commands::get_bash_environment_info,
             commands::ssh_commands::get_command_completion,

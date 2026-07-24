@@ -126,8 +126,11 @@ export class SudoersContextMenu extends BaseContextMenu {
 
   protected resolveAction(action: string): MenuAction | null {
     const entry = this.currentEntry
-    const user = entry.user || ''
+    const rawUser = entry.user || ''
     const source = entry.source || '/etc/sudoers'
+
+    const isGroup = rawUser.startsWith('%')
+    const cleanUser = rawUser.replace(/^%/, '')
 
     const actions: Record<string, MenuAction> = {
       'view-sudoers': {
@@ -151,19 +154,23 @@ export class SudoersContextMenu extends BaseContextMenu {
         actionName: '列出sudoers.d'
       },
       'user-permissions': {
-        command: `sudo -l -U ${user} 2>/dev/null || echo '无法查看权限'`,
-        title: `权限 - ${user}`,
-        actionName: '查看用户权限'
+        command: isGroup
+          ? `sudo -l -g ${cleanUser} 2>/dev/null || grep -rn "^%${cleanUser}" /etc/sudoers /etc/sudoers.d/ 2>/dev/null || echo "无法查看组权限"`
+          : `sudo -l -U ${rawUser} 2>/dev/null || echo "无法查看权限"`,
+        title: `${isGroup ? '组权限' : '权限'} - ${rawUser}`,
+        actionName: isGroup ? '查看组权限' : '查看用户权限'
       },
       'user-sudo-history': {
-        command: `grep "${user}" /var/log/auth.log 2>/dev/null | grep sudo | tail -30 || journalctl _COMM=sudo | grep "${user}" | tail -30`,
-        title: `sudo历史 - ${user}`,
+        command: `grep -E "${rawUser}|${cleanUser}" /var/log/auth.log 2>/dev/null | grep sudo | tail -30 || journalctl _COMM=sudo 2>/dev/null | grep -E "${rawUser}|${cleanUser}" | tail -30 || echo "无sudo历史记录"`,
+        title: `sudo历史 - ${rawUser}`,
         actionName: '查看sudo历史'
       },
       'user-groups': {
-        command: `id ${user} && echo '---' && groups ${user}`,
-        title: `组信息 - ${user}`,
-        actionName: '查看用户组'
+        command: isGroup
+          ? `echo "=== 组基本信息 ===" && (getent group ${cleanUser} 2>/dev/null || grep -E "^${cleanUser}:" /etc/group 2>/dev/null || echo "未找到组 ${cleanUser}") && echo "" && echo "=== 组成员 ===" && (grep -E "^${cleanUser}:" /etc/group 2>/dev/null | cut -d: -f4 | tr ',' '\n' | grep -v '^$' || echo "无额外显式成员")`
+          : `id ${rawUser} 2>/dev/null && echo '---' && groups ${rawUser} 2>/dev/null || echo "无法获取组信息"`,
+        title: `组信息 - ${rawUser}`,
+        actionName: '查看组信息'
       },
       'backup-sudoers': {
         command: `cp /etc/sudoers /etc/sudoers.bak.$(date +%Y%m%d%H%M%S) && echo '✓ 已备份到 /etc/sudoers.bak.'$(date +%Y%m%d%H%M%S)`,

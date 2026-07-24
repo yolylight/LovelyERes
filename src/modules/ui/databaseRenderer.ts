@@ -3,8 +3,8 @@
  * Header + 5 Tabs 布局，匹配 Docker 页面风格
  */
 
-import { Data, Refresh, Plus, Play, Delete, Search, Export, Config, User as UserIcon, Shield } from '@icon-park/svg';
-import type { DatabaseManager, DbTab, ColumnInfo, DbUser, SqlResult } from './databaseManager';
+import { Data, Refresh, Plus, Play, Delete, Search, Export, Config, User as UserIcon, Shield, Edit } from '@icon-park/svg';
+import type { DatabaseManager, DbTab, ColumnInfo, DbUser, SqlResult, SecurityCheckResult } from './databaseManager';
 
 // ==================== Helper Functions ====================
 
@@ -29,13 +29,14 @@ export class DatabaseRenderer {
         ${this.renderHeader()}
         ${this.renderTabs()}
         <div class="db-content">
-          <div class="db-tab-panel" id="db-panel-connections"></div>
-          <div class="db-tab-panel" id="db-panel-sql" style="display:none"></div>
-          <div class="db-tab-panel" id="db-panel-browser" style="display:none"></div>
-          <div class="db-tab-panel" id="db-panel-users" style="display:none"></div>
-          <div class="db-tab-panel" id="db-panel-ops" style="display:none"></div>
+          <div class="db-tab-panel" id="db-tab-connections"></div>
+          <div class="db-tab-panel" id="db-tab-sql" style="display:none"></div>
+          <div class="db-tab-panel" id="db-tab-browser" style="display:none"></div>
+          <div class="db-tab-panel" id="db-tab-users" style="display:none"></div>
+          <div class="db-tab-panel" id="db-tab-ops" style="display:none"></div>
         </div>
         ${this.renderAddModal()}
+        ${this.renderPasswordModal()}
       </div>
     `;
   }
@@ -67,10 +68,39 @@ export class DatabaseRenderer {
           </div>
         </div>
         <div class="db-header-right">
+          <div id="db-switcher-slot" class="db-switcher-slot"></div>
           <button class="modern-btn secondary" data-db-action="detect">${icon(Search)} 检测数据库</button>
           <button class="modern-btn primary" data-db-action="add-connection">${icon(Plus)} 新增连接</button>
         </div>
       </div>
+    `;
+  }
+
+  /**
+   * 顶部全局连接切换器：下拉选择任一已保存连接即可一键切换/连接
+   */
+  renderConnectionSwitcher(mgr: DatabaseManager): string {
+    const connections = mgr.getConnections();
+    const active = mgr.getActiveConnection();
+    if (connections.length === 0) return '';
+
+    const options = connections.map(c => {
+      const label = `${c.isConnected ? '● ' : '○ '}${c.name} (${c.host}:${c.port})`;
+      const selected = active?.id === c.id ? ' selected' : '';
+      return `<option value="${escapeHtml(c.id)}"${selected}>${escapeHtml(label)}</option>`;
+    }).join('');
+
+    const disconnectBtn = active
+      ? `<button class="modern-btn secondary sm" data-db-action="disconnect" title="断开当前连接">${icon(Delete, '14')}</button>`
+      : '';
+
+    return `
+      <span class="db-switcher-label">当前连接</span>
+      <select class="db-select db-switcher-select" id="db-active-switcher" title="切换数据库连接">
+        ${active ? '' : '<option value="" selected>-- 未连接 --</option>'}
+        ${options}
+      </select>
+      ${disconnectBtn}
     `;
   }
 
@@ -125,7 +155,8 @@ export class DatabaseRenderer {
             <div class="db-detected-info">数据目录: ${escapeHtml(db.data_dir)}</div>
             <div class="db-detected-actions">
               ${running
-                ? `<button class="modern-btn secondary sm" data-db-action="service-stop" data-db-type="${escapeHtml(db.db_type)}">停止</button>
+                ? `<button class="modern-btn primary sm" data-db-action="quick-connect" data-db-type="${escapeHtml(db.db_type)}" data-db-port="${db.port}" data-db-name="${escapeHtml(db.name)}">快速连接</button>
+                   <button class="modern-btn secondary sm" data-db-action="service-stop" data-db-type="${escapeHtml(db.db_type)}">停止</button>
                    <button class="modern-btn secondary sm" data-db-action="service-restart" data-db-type="${escapeHtml(db.db_type)}">重启</button>`
                 : `<button class="modern-btn primary sm" data-db-action="service-start" data-db-type="${escapeHtml(db.db_type)}">启动</button>`
               }
@@ -197,7 +228,7 @@ export class DatabaseRenderer {
     return `
       <div class="db-sql-area">
         <div class="db-sql-toolbar">
-          <select class="db-select" data-db-action="select-database">
+          <select class="db-select" id="db-sql-database-select">
             <option value="">-- 选择数据库 --</option>
             ${dbOptions}
           </select>
@@ -241,12 +272,18 @@ export class DatabaseRenderer {
 
     let dataPanel = '<div class="db-empty">选择左侧的表查看数据</div>';
     if (currentTable && tableData) {
+      const dbType = mgr.getActiveConnection()?.db_type;
+      const crud = dbType === 'mysql' || dbType === 'postgresql';
       dataPanel = `
         <div class="db-data-header">
           <span class="db-data-title">${escapeHtml(currentTable)}</span>
-          <button class="modern-btn secondary sm" data-db-action="refresh-tables">${icon(Refresh, '14')} 刷新</button>
+          <div style="display:flex;gap:6px;align-items:center">
+            ${crud ? `<button class="modern-btn primary sm" data-db-action="browser-insert">${icon(Plus, '14')} 新增行</button>` : ''}
+            <button class="modern-btn secondary sm" data-db-action="refresh-tables">${icon(Refresh, '14')} 刷新</button>
+          </div>
         </div>
-        ${this.renderResultTable(tableData)}
+        ${crud ? this.renderBrowserData(mgr, tableData) : this.renderResultTable(tableData)}
+        ${crud ? this.renderPagination(mgr) : ''}
         ${columns.length > 0 ? this.renderColumnInfo(columns) : ''}
       `;
     }
@@ -261,6 +298,110 @@ export class DatabaseRenderer {
         </div>
         <div class="db-data-panel">
           ${dataPanel}
+        </div>
+      </div>
+      ${this.renderRowModal(mgr)}
+    `;
+  }
+
+  /** 带每行编辑/删除操作按钮的数据表（仅 mysql/postgresql） */
+  private renderBrowserData(_mgr: DatabaseManager, result: SqlResult): string {
+    if (result.error) {
+      return `<div class="db-result-error">${escapeHtml(result.error)}</div>`;
+    }
+    if (!result.columns || result.columns.length === 0) {
+      return '<div class="db-empty">该表暂无数据</div>';
+    }
+    const headerCells = result.columns.map(c => `<th>${escapeHtml(c)}</th>`).join('');
+    const bodyRows = result.rows.map((row, i) => {
+      const cells = row.map(cell => `<td>${cell === null ? '<span class="db-null">NULL</span>' : escapeHtml(String(cell))}</td>`).join('');
+      return `
+        <tr>
+          ${cells}
+          <td class="db-row-actions">
+            <button class="db-row-btn" title="编辑" data-db-action="browser-edit-row" data-row-index="${i}">${icon(Edit, '13')}</button>
+            <button class="db-row-btn danger" title="删除" data-db-action="browser-delete-row" data-row-index="${i}">${icon(Delete, '13')}</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div class="db-result-meta">${result.row_count} 行 · ${result.execution_time_ms}ms</div>
+      <div class="db-table-wrap">
+        <table class="db-table">
+          <thead><tr>${headerCells}<th style="width:80px">操作</th></tr></thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  /** 分页控制条 */
+  private renderPagination(mgr: DatabaseManager): string {
+    const page = mgr.getBrowserPage();
+    const pageSize = mgr.getBrowserPageSize();
+    const total = mgr.getBrowserTotal();
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
+    const to = Math.min(page * pageSize, total);
+    return `
+      <div class="db-pagination">
+        <span class="db-pagination-info">共 ${total} 行 · 第 ${from}-${to} 行</span>
+        <div class="db-pagination-ctrl">
+          <button class="modern-btn secondary sm" data-db-action="browser-page-prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
+          <span class="db-pagination-page">${page} / ${totalPages}</span>
+          <button class="modern-btn secondary sm" data-db-action="browser-page-next" ${page >= totalPages ? 'disabled' : ''}>下一页</button>
+        </div>
+      </div>
+    `;
+  }
+
+  /** 行编辑/新增模态框（字段随当前表列动态生成） */
+  private renderRowModal(mgr: DatabaseManager): string {
+    const editor = mgr.getRowEditor();
+    if (!editor) return '';
+    const columns = mgr.getColumns();
+    const isUpdate = editor.mode === 'update';
+    const tableData = mgr.getTableData();
+    const row = isUpdate ? (tableData?.rows?.[editor.rowIndex] ?? []) : [];
+    const dataCols = tableData?.columns ?? [];
+
+    const fields = columns.map(c => {
+      let value = '';
+      let isNull = false;
+      if (isUpdate) {
+        const idx = dataCols.indexOf(c.name);
+        const cell = idx >= 0 ? row[idx] : null;
+        if (cell === null || cell === undefined) { isNull = true; }
+        else { value = String(cell); }
+      }
+      return `
+        <div class="db-form-group">
+          <label class="db-form-label">
+            ${c.is_primary_key ? '<span class="db-pk">PK</span> ' : ''}${escapeHtml(c.name)}
+            <span style="color:var(--text-tertiary);font-weight:400">${escapeHtml(c.data_type)}</span>
+          </label>
+          <input type="text" class="db-form-input" id="db-row-field-${escapeHtml(c.name)}" value="${escapeHtml(value)}" ${isNull ? 'disabled' : ''} />
+          ${c.is_nullable ? `<label class="db-row-null-toggle"><input type="checkbox" id="db-row-null-${escapeHtml(c.name)}" ${isNull ? 'checked' : ''} onchange="this.closest('.db-form-group').querySelector('.db-form-input').disabled=this.checked" /> NULL</label>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="db-modal-overlay" id="db-row-modal" style="display:flex">
+        <div class="db-modal">
+          <div class="db-modal-header">
+            <span class="db-modal-title">${icon(isUpdate ? Edit : Plus, '16')} ${isUpdate ? '编辑行' : '新增行'}</span>
+            <button class="db-modal-close" data-db-action="row-modal-cancel">&times;</button>
+          </div>
+          <div class="db-modal-body">
+            ${fields || '<div class="db-empty">缺少列信息</div>'}
+          </div>
+          <div class="db-modal-footer">
+            <button class="modern-btn secondary" data-db-action="row-modal-cancel">取消</button>
+            <button class="modern-btn primary" data-db-action="row-modal-save">保存</button>
+          </div>
         </div>
       </div>
     `;
@@ -310,7 +451,7 @@ export class DatabaseRenderer {
 
   // ==================== Tab 5: Operations ====================
 
-  private renderOpsTab(_mgr: DatabaseManager): string {
+  private renderOpsTab(mgr: DatabaseManager): string {
     const cards = [
       {
         title: '一键备份',
@@ -366,7 +507,53 @@ export class DatabaseRenderer {
           </div>
         `).join('')}
       </div>
+      ${this.renderSecurityAudit(mgr)}
     `;
+  }
+
+  /** 安全审计触发卡片 + 结果视图 */
+  private renderSecurityAudit(mgr: DatabaseManager): string {
+    const running = mgr.isAuditRunning();
+    const results = mgr.getSecurityResults();
+    return `
+      <div class="db-audit-section">
+        <div class="db-audit-header">
+          <div>
+            <div class="db-section-title" style="margin:0">${icon(Shield, '15')} 安全审计</div>
+            <div class="db-ops-card-desc">检查弱口令、匿名用户、危险权限等安全风险</div>
+          </div>
+          <button class="modern-btn primary sm" data-db-action="run-security-audit" ${running ? 'disabled' : ''}>
+            ${running ? '审计中…' : `${icon(Shield, '14')} 运行审计`}
+          </button>
+        </div>
+        ${results.length > 0 ? this.renderSecurityResults(results) : (running ? '' : '<div class="db-empty">点击「运行审计」开始检查</div>')}
+      </div>
+    `;
+  }
+
+  private renderSecurityResults(results: SecurityCheckResult[]): string {
+    const items = results.map(r => {
+      const sev = (r.severity || 'info').toLowerCase();
+      const status = (r.status || '').toLowerCase();
+      const statusClass = status === 'pass' ? 'pass' : status === 'fail' ? 'fail' : 'warn';
+      const findings = (r.findings && r.findings.length > 0)
+        ? `<ul class="db-audit-findings">${r.findings.map(f =>
+            `<li><strong>${escapeHtml(f.item)}</strong>${f.detail ? ': ' + escapeHtml(f.detail) : ''}</li>`
+          ).join('')}</ul>`
+        : '';
+      return `
+        <div class="db-audit-item db-audit-${statusClass}">
+          <div class="db-audit-item-head">
+            <span class="db-audit-sev db-audit-sev-${escapeHtml(sev)}">${escapeHtml(r.severity || '')}</span>
+            <span class="db-audit-name">${escapeHtml(r.check_name)}</span>
+            <span class="db-audit-status db-audit-status-${statusClass}">${escapeHtml(r.status || '')}</span>
+          </div>
+          ${findings}
+          ${r.recommendation ? `<div class="db-audit-rec">建议: ${escapeHtml(r.recommendation)}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+    return `<div class="db-audit-results">${items}</div>`;
   }
 
   // ==================== Add Connection Modal ====================
@@ -450,12 +637,41 @@ export class DatabaseRenderer {
     `;
   }
 
-  // ==================== Shared Renderers ====================
+  // ==================== Password Prompt Modal ====================
 
   /**
-   * 渲染 SQL 结果表格
+   * 快速连接 / 需要认证时弹出的密码输入框。
+   * 用户可选择「免密连接」或输入密码后「连接」。
    */
-  private renderResultTable(result: SqlResult): string {
+  private renderPasswordModal(): string {
+    return `
+      <div class="db-modal-overlay" id="db-pwd-modal" style="display:none">
+        <div class="db-modal" style="max-width:380px">
+          <div class="db-modal-header">
+            <span class="db-modal-title" id="db-pwd-title">${icon(Shield, '16')} 数据库认证</span>
+            <button class="db-modal-close" data-db-action="pwd-cancel">&times;</button>
+          </div>
+          <div class="db-modal-body">
+            <div class="db-form-group">
+              <label class="db-form-label">密码</label>
+              <input type="password" class="db-form-input" id="db-pwd-input" placeholder="输入密码，或选择免密连接" autocomplete="off" />
+              <div class="db-form-hint">密码仅保存在本次会话内存中，不会写入本地存储。</div>
+            </div>
+          </div>
+          <div class="db-modal-footer">
+            <button class="modern-btn secondary" data-db-action="pwd-nopass">免密连接</button>
+            <button class="modern-btn primary" data-db-action="pwd-confirm">连接</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ==================== Shared Renderers ====================
+  /**
+   * 渲染 SQL 结果表格（供 DatabaseManager 复用，保证执行结果与重渲染一致）
+   */
+  public renderResultTable(result: SqlResult): string {
     if (result.error) {
       return `<div class="db-result-error">${escapeHtml(result.error)}</div>`;
     }

@@ -172,6 +172,18 @@ fn shell_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
+/// Escape a value for embedding inside a single-quoted SQL string literal.
+/// MySQL treats `\` as an escape character by default, so it must be doubled
+/// BEFORE escaping quotes — otherwise `C:\temp` would smuggle in `\t` (tab).
+/// PostgreSQL (standard_conforming_strings) treats `\` literally and only
+/// requires doubling `'`.
+fn escape_sql_value(s: &str, db_type: &str) -> String {
+    match db_type {
+        "mysql" => s.replace('\\', "\\\\").replace('\'', "\\'"),
+        _ => s.replace('\'', "''"),
+    }
+}
+
 fn wrap_docker_exec(conn: &DbConnection, cmd: &str) -> String {
     match &conn.connection_mode {
         Some(ConnectionMode::Docker { container_id, .. }) => {
@@ -233,7 +245,7 @@ pub fn detect_databases(ssh: &SSHManagerRussh) -> Result<Vec<DatabaseInfo>, Stri
     let mysql_status = get_output(0);
     let mysql_version = get_output(1);
     if !mysql_version.contains("__NOT_INSTALLED__") && !mysql_version.is_empty() {
-        let status = if mysql_status.contains("active") { "running" } else { "stopped" };
+        let status = if mysql_status.lines().any(|l| l.trim() == "active") { "running" } else { "stopped" };
         let name = if mysql_version.to_lowercase().contains("mariadb") { "MariaDB" } else { "MySQL" };
         databases.push(DatabaseInfo {
             db_type: "mysql".to_string(),
@@ -249,7 +261,7 @@ pub fn detect_databases(ssh: &SSHManagerRussh) -> Result<Vec<DatabaseInfo>, Stri
     let pg_status = get_output(2);
     let pg_version = get_output(3);
     if !pg_version.contains("__NOT_INSTALLED__") && !pg_version.is_empty() {
-        let status = if pg_status.contains("active") { "running" } else { "stopped" };
+        let status = if pg_status.lines().any(|l| l.trim() == "active") { "running" } else { "stopped" };
         databases.push(DatabaseInfo {
             db_type: "postgresql".to_string(),
             name: "PostgreSQL".to_string(),
@@ -264,7 +276,7 @@ pub fn detect_databases(ssh: &SSHManagerRussh) -> Result<Vec<DatabaseInfo>, Stri
     let redis_status = get_output(4);
     let redis_version = get_output(5);
     if !redis_version.contains("__NOT_INSTALLED__") && !redis_version.is_empty() {
-        let status = if redis_status.contains("active") { "running" } else { "stopped" };
+        let status = if redis_status.lines().any(|l| l.trim() == "active") { "running" } else { "stopped" };
         databases.push(DatabaseInfo {
             db_type: "redis".to_string(),
             name: "Redis".to_string(),
@@ -279,7 +291,7 @@ pub fn detect_databases(ssh: &SSHManagerRussh) -> Result<Vec<DatabaseInfo>, Stri
     let mongo_status = get_output(6);
     let mongo_version = get_output(7);
     if !mongo_version.contains("__NOT_INSTALLED__") && !mongo_version.is_empty() {
-        let status = if mongo_status.contains("active") { "running" } else { "stopped" };
+        let status = if mongo_status.lines().any(|l| l.trim() == "active") { "running" } else { "stopped" };
         databases.push(DatabaseInfo {
             db_type: "mongodb".to_string(),
             name: "MongoDB".to_string(),
@@ -294,7 +306,7 @@ pub fn detect_databases(ssh: &SSHManagerRussh) -> Result<Vec<DatabaseInfo>, Stri
     let dm_status = get_output(8);
     let dm_version = get_output(9);
     if !dm_version.contains("__NOT_INSTALLED__") && !dm_version.is_empty() {
-        let status = if dm_status.contains("active") { "running" } else { "stopped" };
+        let status = if dm_status.lines().any(|l| l.trim() == "active") { "running" } else { "stopped" };
         databases.push(DatabaseInfo {
             db_type: "dm".to_string(),
             name: "DM (达梦)".to_string(),
@@ -309,7 +321,7 @@ pub fn detect_databases(ssh: &SSHManagerRussh) -> Result<Vec<DatabaseInfo>, Stri
     let kb_status = get_output(10);
     let kb_version = get_output(11);
     if !kb_version.contains("__NOT_INSTALLED__") && !kb_version.is_empty() {
-        let status = if kb_status.contains("active") { "running" } else { "stopped" };
+        let status = if kb_status.lines().any(|l| l.trim() == "active") { "running" } else { "stopped" };
         databases.push(DatabaseInfo {
             db_type: "kingbase".to_string(),
             name: "KingBase".to_string(),
@@ -396,10 +408,45 @@ pub fn execute_sql(
 
     let output = ssh.execute_command(&wrap_docker_exec(conn, &cmd))?;
     let elapsed = start.elapsed().as_millis() as u64;
-    let raw = output.output.trim().to_string();
 
-    // Check for error indicators
-    if raw.starts_with("ERROR") || raw.contains("error:") || raw.contains("FATAL:") {
+    // ── 优先检查 SSH 层面的执行失败 ──
+    // 1) SSH 命令超时（MySQL CLI 连接超时通常远超 SSH 的 60s 限制）
+    if output.timed_out {
+        return Ok(SqlResult {
+            columns: vec![],
+            rows: vec![],
+            row_count: 0,
+            affected_rows: None,
+            execution_time_ms: elapsed,
+            error: Some(format!("数据库连接超时: {}", output.output)),
+        });
+    }
+    // 2) 非零 exit_code 说明 CLI 执行失败（连接拒绝、认证失败等）
+    if let Some(code) = output.exit_code {
+        if code != 0 {
+            let raw = strip_client_warnings(&output.output);
+            let detail = if raw.is_empty() {
+                format!("命令退出码: {}", code)
+            } else {
+                raw
+            };
+            return Ok(SqlResult {
+                columns: vec![],
+                rows: vec![],
+                row_count: 0,
+                affected_rows: None,
+                execution_time_ms: elapsed,
+                error: Some(detail),
+            });
+        }
+    }
+
+    // 过滤 MySQL/客户端在使用命令行密码时输出到 stderr 的告警行，
+    // 否则该行会被 2>&1 合并进来并被 parse_mysql_output 误当作表头。
+    let raw = strip_client_warnings(&output.output);
+
+    // ── 检查输出中的错误标记 ──
+    if looks_like_db_error(&raw) {
         return Ok(SqlResult {
             columns: vec![],
             rows: vec![],
@@ -431,6 +478,70 @@ pub fn execute_sql(
 }
 
 // ==================== Output parsers ====================
+
+/// 去除数据库客户端输出到 stderr 的告警噪音行（经 2>&1 合并进来），
+/// 例如 MySQL 的 "Using a password on the command line interface can be insecure"。
+/// 同时 trim 首尾空白，返回适合后续解析的干净文本。
+fn strip_client_warnings(raw: &str) -> String {
+    raw.lines()
+        .filter(|line| {
+            let l = line.trim();
+            if l.is_empty() {
+                return true; // 保留空行由各解析器决定是否忽略
+            }
+            let lower = l.to_lowercase();
+            // MySQL/MariaDB 命令行密码告警
+            if lower.contains("using a password on the command line interface can be insecure") {
+                return false;
+            }
+            // 形如 "mysql: [Warning] ..." / "mysqldump: [Warning] ..."
+            if lower.contains("[warning]") && lower.contains("password") {
+                return false;
+            }
+            true
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// 判断数据库 CLI 输出是否包含错误标记。
+/// 覆盖 MySQL ERROR、PostgreSQL FATAL、Redis ERR、MongoDB 错误及连接失败等场景。
+fn looks_like_db_error(raw: &str) -> bool {
+    // 快速路径：以 ERROR 开头（MySQL 标准错误格式）
+    if raw.starts_with("ERROR") {
+        return true;
+    }
+    let lower = raw.to_lowercase();
+    // MySQL: "ERROR xxxx (HYxxx):" 可能不在行首（被前置空行或杂项输出推后）
+    if lower.contains("\nerror ") || (lower.contains("error ") && lower.contains("(hy")) {
+        return true;
+    }
+    // PostgreSQL
+    if lower.contains("fatal:") {
+        return true;
+    }
+    // Redis
+    if raw.starts_with("ERR ") || raw.starts_with("NOAUTH") || raw.contains("\nERR ") {
+        return true;
+    }
+    // MongoDB
+    if lower.contains("mongosh") && lower.contains("error") {
+        return true;
+    }
+    // 通用连接失败
+    if lower.contains("can't connect") || lower.contains("cannot connect")
+        || lower.contains("connection refused") || lower.contains("connection timed out")
+    {
+        return true;
+    }
+    // 通用 "error:" 标记（保留原逻辑兼容性）
+    if raw.contains("error:") {
+        return true;
+    }
+    false
+}
 
 /// Parse MySQL batch output (tab-separated, first line = headers).
 fn parse_mysql_output(raw: &str) -> (Vec<String>, Vec<Vec<String>>) {
@@ -997,7 +1108,8 @@ pub fn get_db_stats(
             let mut slow_queries: u64 = 0;
 
             if let Some(Ok(out)) = results.get(0) {
-                for line in out.output.lines().skip(1) {
+                let cleaned = strip_client_warnings(&out.output);
+                for line in cleaned.lines().skip(1) {
                     let parts: Vec<&str> = line.split('\t').collect();
                     if parts.len() >= 2 {
                         let key = parts[0].trim();
@@ -1021,7 +1133,8 @@ pub fn get_db_stats(
 
             let mut db_size_total = "unknown".to_string();
             if let Some(Ok(out)) = results.get(1) {
-                for line in out.output.lines().skip(1) {
+                let cleaned = strip_client_warnings(&out.output);
+                for line in cleaned.lines().skip(1) {
                     let trimmed = line.trim();
                     if !trimmed.is_empty() && trimmed != "NULL" {
                         db_size_total = format!("{} MB", trimmed);
@@ -1279,7 +1392,8 @@ pub fn select_rows(
     validate_identifier(database)?;
     validate_identifier(table)?;
 
-    let offset = page * page_size;
+    // page 为 1-based；page<=1 时从头开始
+    let offset = page.saturating_sub(1) * page_size;
     let conn_with_db = DbConnection {
         database: Some(database.to_string()),
         ..conn.clone()
@@ -1333,7 +1447,7 @@ pub fn update_row(
             for (col, val) in &params.updates {
                 validate_identifier(col)?;
                 let val_str = match val {
-                    Some(v) => format!("'{}'", v.replace('\'', "\\'")),
+                    Some(v) => format!("'{}'", escape_sql_value(v, db_type)),
                     None => "NULL".to_string(),
                 };
                 set_clauses.push(format!("{}={}", quote_identifier(col, db_type), val_str));
@@ -1342,7 +1456,7 @@ pub fn update_row(
             let mut where_clauses = Vec::new();
             for (col, val) in &params.conditions {
                 validate_identifier(col)?;
-                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), val.replace('\'', "\\'")));
+                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), escape_sql_value(val, db_type)));
             }
 
             if set_clauses.is_empty() { return Err("没有要更新的字段".to_string()); }
@@ -1363,7 +1477,7 @@ pub fn update_row(
             for (col, val) in &params.updates {
                 validate_identifier(col)?;
                 let val_str = match val {
-                    Some(v) => format!("'{}'", v.replace('\'', "''")),
+                    Some(v) => format!("'{}'", escape_sql_value(v, db_type)),
                     None => "NULL".to_string(),
                 };
                 set_clauses.push(format!("{}={}", quote_identifier(col, db_type), val_str));
@@ -1372,7 +1486,7 @@ pub fn update_row(
             let mut where_clauses = Vec::new();
             for (col, val) in &params.conditions {
                 validate_identifier(col)?;
-                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), val.replace('\'', "''")));
+                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), escape_sql_value(val, db_type)));
             }
 
             if set_clauses.is_empty() { return Err("没有要更新的字段".to_string()); }
@@ -1406,7 +1520,7 @@ pub fn delete_row(
             let mut where_clauses = Vec::new();
             for (col, val) in &params.conditions {
                 validate_identifier(col)?;
-                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), val.replace('\'', "\\'")));
+                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), escape_sql_value(val, db_type)));
             }
             if where_clauses.is_empty() { return Err("删除操作必须包含条件".to_string()); }
 
@@ -1423,7 +1537,7 @@ pub fn delete_row(
             let mut where_clauses = Vec::new();
             for (col, val) in &params.conditions {
                 validate_identifier(col)?;
-                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), val.replace('\'', "''")));
+                where_clauses.push(format!("{}='{}'", quote_identifier(col, db_type), escape_sql_value(val, db_type)));
             }
             if where_clauses.is_empty() { return Err("删除操作必须包含条件".to_string()); }
 
@@ -1457,7 +1571,7 @@ pub fn insert_row(
                 validate_identifier(col)?;
                 columns.push(quote_identifier(col, db_type));
                 match val {
-                    Some(v) => values.push(format!("'{}'", v.replace('\'', "\\'"  ))),
+                    Some(v) => values.push(format!("'{}'", escape_sql_value(v, db_type))),
                     None => values.push("NULL".to_string()),
                 }
             }
@@ -1480,7 +1594,7 @@ pub fn insert_row(
                 validate_identifier(col)?;
                 columns.push(quote_identifier(col, db_type));
                 match val {
-                    Some(v) => values.push(format!("'{}'", v.replace('\'', "''"))),
+                    Some(v) => values.push(format!("'{}'", escape_sql_value(v, db_type))),
                     None => values.push("NULL".to_string()),
                 }
             }

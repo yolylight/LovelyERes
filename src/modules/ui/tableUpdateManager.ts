@@ -203,16 +203,20 @@ function updateNetworkTable(networkDetails: any[]): void {
     return;
   }
 
+  const cleanAddr = (addr: string) => (addr || '').replace(/%[^\s:\]]+(?=\]|:|\s|$)/g, '').trim();
+
   tbody.innerHTML = networkDetails.map((conn) => {
+    const localAddress = cleanAddr(conn.localAddress);
+    const foreignAddress = cleanAddr(conn.foreignAddress);
     const isEstablished = conn.state === 'ESTABLISHED' || conn.state === 'ESTAB';
     const standardPorts = [':22', ':80', ':443', ':3306', ':5432', ':6379', ':53', ':8080', ':8443'];
-    const isSuspiciousConn = isEstablished && !standardPorts.some(p => (conn.foreignAddress || '').endsWith(p)) && conn.foreignAddress && conn.foreignAddress !== '*:*' && conn.foreignAddress !== '0.0.0.0:*';
+    const isSuspiciousConn = isEstablished && !standardPorts.some(p => (foreignAddress || '').endsWith(p)) && foreignAddress && foreignAddress !== '*:*' && foreignAddress !== '0.0.0.0:*';
     const rowBg = isSuspiciousConn ? 'background: #faad1408; border-left: 2px solid #faad14;' : '';
     return `
-    <tr class="network-row" data-protocol="${conn.protocol}" data-local="${conn.localAddress}" data-foreign="${conn.foreignAddress}" data-state="${conn.state}" data-pid="${conn.pid || '-'}" data-process="${conn.process}" style="border-bottom: 1px solid var(--border-color); cursor: context-menu; ${rowBg}">
+    <tr class="network-row" data-protocol="${conn.protocol}" data-local="${localAddress}" data-foreign="${foreignAddress}" data-state="${conn.state}" data-pid="${conn.pid || '-'}" data-process="${conn.process}" style="border-bottom: 1px solid var(--border-color); cursor: context-menu; ${rowBg}">
       <td style="padding: var(--spacing-sm); font-size: 12px; color: var(--text-primary); border-right: 1px solid var(--border-color-light);">${conn.protocol}</td>
-      <td style="padding: var(--spacing-sm); font-size: 12px; color: var(--text-primary); border-right: 1px solid var(--border-color-light);">${conn.localAddress}</td>
-      <td style="padding: var(--spacing-sm); font-size: 12px; color: var(--text-primary); border-right: 1px solid var(--border-color-light);">${conn.foreignAddress}</td>
+      <td style="padding: var(--spacing-sm); font-size: 12px; color: var(--text-primary); border-right: 1px solid var(--border-color-light);">${localAddress}</td>
+      <td style="padding: var(--spacing-sm); font-size: 12px; color: var(--text-primary); border-right: 1px solid var(--border-color-light);">${foreignAddress}</td>
       <td style="padding: var(--spacing-sm); font-size: 12px; color: var(--text-primary); border-right: 1px solid var(--border-color-light);">${conn.state}</td>
       <td style="padding: var(--spacing-sm); font-size: 12px; color: var(--text-primary); border-right: 1px solid var(--border-color-light);">${conn.pid || '-'}</td>
       <td style="padding: var(--spacing-sm); font-size: 12px; color: var(--text-primary);">${conn.process}</td>

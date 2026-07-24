@@ -6,7 +6,14 @@
   display: flex;
   flex-direction: column;
   min-width: 0; /* prevent flex blowout */
+  position: relative; /* anchor for .terminal-fab */
 }
+
+/* 终端按钮旧样式兼容 */
+.terminal-fab {
+  display: none;
+}
+
 
 .workspace-header {
   padding: var(--spacing-sm) var(--spacing-md);

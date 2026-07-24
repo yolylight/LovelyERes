@@ -129,33 +129,24 @@ export class ModernUIRenderer {
     this.stateManager.addListener((newState) => {
       const oldTheme = this.state.theme;
       const oldConnected = this.state.isConnected;
+      const oldServer = this.state.serverInfo?.name || this.state.currentServer;
 
       this.state = newState;
 
-      // 如果主题或连接状态发生变化，重新渲染连接面板
-      if (oldTheme !== newState.theme || oldConnected !== newState.isConnected) {
-        console.log('🎨 状态监听器检测到变化，重新渲染连接面板', {
+      const newServer = newState.serverInfo?.name || newState.currentServer;
+
+      // 如果主题、连接状态或当前连接的服务器发生变化，重新渲染设置面板与状态栏
+      if (oldTheme !== newState.theme || oldConnected !== newState.isConnected || oldServer !== newServer) {
+        console.log('🎨 状态监听器检测到变化，重新渲染设置面板与状态栏', {
           oldTheme,
           newTheme: newState.theme,
           oldConnected,
-          newConnected: newState.isConnected
+          newConnected: newState.isConnected,
+          oldServer,
+          newServer
         });
-        this.rerenderConnectionPanel();
+        this.rerenderSettingsPanel();
         this.rerenderStatusBar();
-
-        // 如果是从未连接变为已连接，触发状态变化动画
-        if (!oldConnected && newState.isConnected) {
-          console.log('🎉 连接成功，触发状态变化动画');
-          setTimeout(() => {
-            const connectionCard = document.querySelector('.connection-card');
-            if (connectionCard) {
-              connectionCard.classList.add('status-change');
-              setTimeout(() => {
-                connectionCard.classList.remove('status-change');
-              }, 800);
-            }
-          }, 50); // 等待DOM更新
-        }
       }
     });
 
@@ -173,27 +164,18 @@ export class ModernUIRenderer {
 
     console.log('🔄 ModernUIRenderer.updateState - 主题变化:', { oldTheme, newTheme: newState.theme });
 
-    // 如果主题发生变化，重新渲染连接面板
+    // 如果主题发生变化，重新渲染设置面板
     if (oldTheme !== newState.theme) {
-      console.log('🎨 主题已变化，重新渲染连接面板');
-      this.rerenderConnectionPanel();
+      console.log('🎨 主题已变化，重新渲染设置面板');
+      this.rerenderSettingsPanel();
     }
   }
 
   /**
-   * 重新渲染连接面板
+   * 重新渲染设置面板
    */
-  private rerenderConnectionPanel(): void {
-    // 更新连接面板 (左下角)
-    const sidebar = document.querySelector('.modern-sidebar');
-    if (sidebar) {
-      const wrapper = sidebar.querySelector('.connection-card-wrapper');
-      if (wrapper) {
-        wrapper.innerHTML = this.renderConnectionPanel();
-      }
-    }
-
-    // 同时更新设置下拉菜单中的连接状态
+  private rerenderSettingsPanel(): void {
+    // 更新设置下拉菜单中的连接状态
     const settingsMenu = document.getElementById('settings-dropdown-menu');
     if (settingsMenu) {
       settingsMenu.outerHTML = this.renderSettingsMenu();
@@ -351,11 +333,8 @@ export class ModernUIRenderer {
           ${this.renderNavigationMenu()}
         </div>
 
-        <!-- 底部：连接面板 + 操作按钮 -->
+        <!-- 底部：操作按钮 -->
         <div class="sidebar-foot">
-          <div class="connection-card-wrapper">
-            ${this.renderConnectionPanel()}
-          </div>
           <div class="sidebar-foot-actions">
             <div class="sidebar-settings-container">
               ${this.renderSettingsMenu()}
@@ -456,47 +435,6 @@ export class ModernUIRenderer {
   }
 
   /**
-   * 渲染连接面板
-   */
-  private renderConnectionPanel(): string {
-    const isConnected = this.state.isConnected;
-    const serverName = isConnected && this.state.serverInfo
-      ? (this.state.serverInfo.name || this.state.serverInfo.host)
-      : '';
-
-    return `
-      <!-- 连接面板 -->
-      <div class="user-panel" onclick="window.toggleUserDropdown?.()">
-        <img class="user-panel-avatar" src="/logo.png" alt="avatar" />
-        <div class="user-panel-info">
-          <span class="user-panel-name">LovelyRes</span>
-          <span class="user-panel-status">${isConnected ? serverName : '未连接'}</span>
-        </div>
-        ${isConnected ? '<span class="user-panel-dot connected"></span>' : '<span class="user-panel-dot"></span>'}
-      </div>
-
-      <!-- 连接下拉菜单 -->
-      <div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
-        ${isConnected ? `
-          <div class="user-dropdown-item" onclick="window.confirmDisconnect?.(); document.getElementById('user-dropdown-menu').style.display='none';">
-            ${LinkInterrupt({ theme: 'outline', size: '14', fill: 'currentColor' })}
-            <span>断开连接</span>
-          </div>
-        ` : `
-          <div class="user-dropdown-item" onclick="window.switchPage?.('system-info'); document.getElementById('user-dropdown-menu').style.display='none';">
-            ${Connection({ theme: 'outline', size: '14', fill: 'currentColor' })}
-            <span>连接服务器</span>
-          </div>
-        `}
-        <div class="user-dropdown-item" onclick="window.showSettingsOverlay?.(); document.getElementById('user-dropdown-menu').style.display='none';">
-          ${SettingTwo({ theme: 'outline', size: '14', fill: 'currentColor' })}
-          <span>设置</span>
-        </div>
-      </div>
-    `;
-  }
-
-  /**
    * 渲染导航菜单
    */
   private renderNavigationMenu(): string {
@@ -522,6 +460,7 @@ export class ModernUIRenderer {
       {
         id: 'emergency', label: '应急响应', accent: '#f87171', icon: Shield(ico),
         items: [
+          { id: 'memshell-scan', icon: Shield(ico), title: '内存马排查' },
           { id: 'emergency-commands', icon: Code(ico), title: '命令执行' },
           { id: 'packet-capture', icon: NetworkTree(ico), title: '网络抓包' },
           { id: 'log-analysis', icon: Log(ico), title: '日志审计' },
@@ -562,10 +501,11 @@ export class ModernUIRenderer {
             ${hasSub ? `<span class="sidebar-item-chev">${chevSmall}</span>` : ''}
           </button>`;
         if (active && hasSub) {
+          const isCollapsed = (window as any).isSubtreeCollapsed ? (window as any).isSubtreeCollapsed(it.id) : false;
           const sub = it.id === 'system-info'
             ? this.systemInfoRenderer.renderSidebarSubtree(this.state)
             : this.renderSftpSubtree();
-          return `<div class="sidebar-item-wrap expanded">${btn}<div class="sidebar-subtree">${sub}</div></div>`;
+          return `<div class="sidebar-item-wrap ${isCollapsed ? 'collapsed' : 'expanded'}" data-subtree-id="${it.id}">${btn}<div class="sidebar-subtree"${isCollapsed ? ' style="display:none;"' : ''}>${sub}</div></div>`;
         }
         return btn;
       }).join('');
@@ -783,6 +723,9 @@ export class ModernUIRenderer {
         return this.renderCheckAuditPage();
       case 'ai-history':
         return this.renderAIHistoryPage();
+      case 'memshell-scan':
+        setTimeout(() => this.initializeMemshellScanPage(), 0);
+        return this.renderMemshellScanPage();
       case 'packet-capture':
         // Initialize lifecycle (event delegation, Tauri listeners, rate timer)
         this.packetCaptureRenderer.initialize();
@@ -972,6 +915,231 @@ export class ModernUIRenderer {
         <div id="ai-history-content" class="aih-content"></div>
       </div>
     `;
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  private renderMemshellScanPage(): string {
+    return `
+      <div class="ca-page">
+        <div class="ca-header">
+          <div class="ca-header-left">
+            <h2>内存马排查</h2>
+            <span class="ca-badge">应急响应</span>
+          </div>
+          <div class="ca-header-actions">
+            <button class="ca-btn primary" id="memshell-scan-btn">⚡ 一键排查</button>
+          </div>
+        </div>
+        <div class="ca-content" style="padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px;">
+          <div id="memshell-scan-empty" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 300px; color: var(--text-secondary); gap: 16px;">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-shield"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+            <div style="font-size: 15px; font-weight: 500;">点击右上角“一键排查”按钮开始扫描系统内存马</div>
+          </div>
+          <div id="memshell-scan-results" style="display: none; flex-direction: column; gap: 16px;">
+          </div>
+          <div id="memshell-scan-log-container" style="display: none; flex-direction: column; gap: 10px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: var(--text-primary);">
+                <div id="memshell-scan-spinner" style="width: 18px; height: 18px; border: 2.5px solid var(--bg-tertiary); border-top-color: var(--primary-color); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                <span id="memshell-scan-status-text">正在进行 JVM 内存马深度分析，请稍候...</span>
+              </div>
+            </div>
+            <div id="memshell-scan-log" class="memshell-scan-log"></div>
+          </div>
+        </div>
+        <style>
+          @keyframes spin { to { transform: rotate(360deg); } }
+          .memshell-scan-log {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text-secondary);
+            max-height: 320px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+          }
+          .memshell-scan-log .log-line { display: block; }
+          .memshell-scan-log .log-line.alert { color: var(--error-color); font-weight: 600; }
+          .memshell-issue-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            transition: all 0.2s ease;
+          }
+          .memshell-issue-card:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            border-color: var(--primary-color);
+          }
+          .memshell-issue-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+          }
+          .memshell-issue-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+          }
+          .memshell-severity-badge {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+          }
+          .memshell-severity-badge.critical { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
+          .memshell-severity-badge.high { background: rgba(249, 115, 22, 0.1); color: #f97316; }
+          .memshell-severity-badge.medium { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
+          .memshell-severity-badge.low { background: rgba(59, 130, 246, 0.1); color: #3b82f6; }
+          .memshell-issue-desc {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+          }
+          .memshell-issue-section {
+            border-top: 1px solid var(--border-color);
+            padding-top: 12px;
+            margin-top: 4px;
+          }
+          .memshell-sec-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+          }
+          .memshell-sec-content {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            background: var(--bg-tertiary);
+            padding: 10px;
+            border-radius: 8px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+          }
+        </style>
+      </div>
+    `;
+  }
+
+  private initializeMemshellScanPage(): void {
+    const btn = document.getElementById('memshell-scan-btn');
+    if (!btn) return;
+
+    btn.onclick = async () => {
+      const emptyEl = document.getElementById('memshell-scan-empty');
+      const logContainerEl = document.getElementById('memshell-scan-log-container');
+      const spinnerEl = document.getElementById('memshell-scan-spinner');
+      const statusTextEl = document.getElementById('memshell-scan-status-text');
+      const resultsEl = document.getElementById('memshell-scan-results');
+      const logEl = document.getElementById('memshell-scan-log');
+
+      if (emptyEl) emptyEl.style.display = 'none';
+      if (resultsEl) {
+        resultsEl.style.display = 'none';
+        resultsEl.innerHTML = '';
+      }
+      if (logContainerEl) logContainerEl.style.display = 'flex';
+      if (spinnerEl) spinnerEl.style.display = 'block';
+      if (statusTextEl) statusTextEl.textContent = '正在进行 JVM 内存马深度分析，请稍候...';
+      if (logEl) logEl.innerHTML = '';
+      btn.setAttribute('disabled', 'true');
+
+      // 监听后端排查过程信息，实时输出到日志区
+      const { listen } = await import('@tauri-apps/api/event');
+      const appendLog = (msg: string) => {
+        if (!logEl) return;
+        const line = document.createElement('span');
+        line.className = 'log-line';
+        // 命中风险的关键提示高亮显示
+        if (/发现|检测到|疑似|异常|！/.test(msg)) line.classList.add('alert');
+        line.textContent = msg;
+        logEl.appendChild(line);
+        logEl.scrollTop = logEl.scrollHeight;
+      };
+      const unlisten = await listen<string>('memshell_scan_progress', (event) => {
+        appendLog(event.payload);
+      });
+
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const result = await invoke('detect_memshell') as any;
+
+        if (spinnerEl) spinnerEl.style.display = 'none';
+        if (statusTextEl) statusTextEl.textContent = '📋 排查过程日志';
+        btn.removeAttribute('disabled');
+
+        const issues = result?.issues || [];
+        if (resultsEl) {
+          resultsEl.style.display = 'flex';
+          if (issues.length === 0) {
+            resultsEl.innerHTML = `
+              <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; color: var(--success-color); gap: 10px;">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                <div style="font-size: 15px; font-weight: 600; color: var(--text-primary)">未检测到明显内存马特征</div>
+                <div style="font-size: 12px; color: var(--text-secondary)">JVM 运行环境和相关进程均处于正常状态</div>
+              </div>
+            `;
+          } else {
+            resultsEl.innerHTML = issues.map((issue: any) => {
+              const detailsHtml = issue.details
+                ? `<div class="memshell-issue-section">
+                     <div class="memshell-sec-title">检测详情</div>
+                     <div class="memshell-sec-content">${this.escapeHtml(issue.details)}</div>
+                   </div>`
+                : '';
+              return `
+                <div class="memshell-issue-card">
+                  <div class="memshell-issue-header">
+                    <span class="memshell-issue-title">${this.escapeHtml(issue.title)}</span>
+                    <span class="memshell-severity-badge ${issue.severity}">${this.escapeHtml(issue.severity === 'critical' ? '严重' : issue.severity === 'high' ? '高危' : issue.severity === 'medium' ? '中危' : '低危')}</span>
+                  </div>
+                  <div class="memshell-issue-desc">${this.escapeHtml(issue.description)}</div>
+                  <div class="memshell-issue-section">
+                    <div class="memshell-sec-title">修复建议</div>
+                    <div class="memshell-issue-desc" style="color:var(--text-primary); font-weight:500;">${this.escapeHtml(issue.recommendation)}</div>
+                  </div>
+                  ${detailsHtml}
+                </div>
+              `;
+            }).join('');
+          }
+        }
+      } catch (err) {
+        if (spinnerEl) spinnerEl.style.display = 'none';
+        if (statusTextEl) statusTextEl.textContent = '📋 排查过程日志 (排查异常中断)';
+        btn.removeAttribute('disabled');
+        if (resultsEl) {
+          resultsEl.style.display = 'flex';
+          resultsEl.innerHTML = `
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; color: var(--error-color); gap: 10px;">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div style="font-size: 15px; font-weight: 600; color: var(--text-primary)">检测失败</div>
+              <div style="font-size: 12px; color: var(--text-secondary)">${this.escapeHtml(String(err))}</div>
+            </div>
+          `;
+        }
+      } finally {
+        unlisten();
+      }
+    };
   }
 
   /**

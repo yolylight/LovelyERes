@@ -94,6 +94,7 @@ pub struct SSHConnectionStatus {
     pub host: String,
     pub port: u16,
     pub username: String,
+    pub session_id: String,
     pub last_activity: chrono::DateTime<chrono::Utc>,
 }
 
@@ -131,6 +132,85 @@ impl Handler for ClientHandler {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// 构造 sudo 命令。统一所有执行路径的 sudo 构造方式，消除各处不一致。
+///
+/// - `with_stdin_password = true`：使用 `sudo -S -p '' -k`，通过 stdin 提供密码。
+///   `-p ''` 将密码提示串置空，从源头避免本地化提示（如 `[sudo] user 的密码：`）
+///   泄漏到输出中；`-k` 忽略此前缓存的凭据，确保 sudo 一定会读取 stdin 上的密码，
+///   避免因凭据缓存跳过读取而导致 stdin 上的密码串错位进入命令输入。
+/// - `with_stdin_password = false`：使用 `sudo -n`（非交互，依赖 NOPASSWD 配置）。
+///
+/// 命令统一用 `LANG=C LC_ALL=C` 包裹，令任何残留的 sudo 提示/错误信息为可预测的
+/// 英文，从而使错误检测与输出清洗与系统语言环境无关。
+fn build_sudo_command(inner_command: &str, with_stdin_password: bool) -> String {
+    let sudo_prefix = if with_stdin_password {
+        "sudo -S -p '' -k"
+    } else {
+        "sudo -n"
+    };
+    // sudo 默认会重置 PATH（secure_path），导致安装在 /usr/local/bin 等非标准
+    // 位置的可执行文件（如 docker、docker-compose）找不到，表现为
+    // `sh: docker: not found`。这里通过 `env "PATH=..."` 在 sudo 清理环境后
+    // 重新注入常见路径，覆盖 Docker Desktop / 手动安装（/usr/local/bin）与
+    // 包管理器安装（/usr/bin、/bin）等位置。保留 $PATH 以兼容自定义环境。
+    format!(
+        "LANG=C LC_ALL=C {} env \"PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin\" sh -c {}",
+        sudo_prefix,
+        shell_quote(inner_command)
+    )
+}
+
+/// 判断一行文本是否为 sudo 密码提示行（多语言容错）。
+/// 即便使用了 `-p ''`，某些 sudo 版本或 PAM 模块仍可能输出提示，故保留清洗兜底。
+fn is_sudo_prompt_line(line: &str) -> bool {
+    // 英文提示 + 常见本地化关键字（中文/繁体/通用）
+    const MARKERS: &[&str] = &[
+        "[sudo] password for",
+        "[sudo]",
+        "Password:",
+        "password for",
+        "的密码",   // 简体/繁体：xxx 的密码：
+        "密码",     // 兜底
+        "密碼",     // 繁体
+        "口令",     // 部分本地化
+    ];
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    MARKERS.iter().any(|m| trimmed.contains(m))
+}
+
+/// 从命令输出中剔除 sudo 密码提示行（多语言容错）。
+fn strip_sudo_prompt(text: &str) -> String {
+    text.lines()
+        .filter(|line| !is_sudo_prompt_line(line))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+/// 依据 exit code 与 stderr 内容判断 sudo 是否因密码/权限失败。
+/// 由于命令强制 `LANG=C`，此处的英文标记是稳定可靠的。
+/// 返回 Some(错误信息) 表示失败，None 表示未检测到 sudo 认证失败。
+fn detect_sudo_failure(stderr: &str, exit_code: Option<i32>) -> Option<String> {
+    let lower = stderr.to_lowercase();
+    if lower.contains("incorrect password")
+        || lower.contains("sorry, try again")
+        || lower.contains("incorrect password attempts")
+        || lower.contains("a password is required")
+    {
+        return Some("Sudo密码错误，请检查配置".to_string());
+    }
+    // sudo 在密码错误耗尽重试后以退出码 1 结束，且 stderr 通常仅剩提示行。
+    // 结合 exit_code 与标记，避免误伤业务命令自身的非零退出。
+    if exit_code == Some(1)
+        && (lower.contains("sudo:") && lower.contains("password"))
+    {
+        return Some("Sudo密码错误，请检查配置".to_string());
+    }
+    None
 }
 
 // ================== Worker Thread Messages ==================
@@ -394,15 +474,31 @@ async fn connect_async(
     Ok(handle)
 }
 
+/// 带有重试机制的 SSH 通道打开函数，防止因高并发或 SSHD 瞬间繁忙导致 ConnectFailed
+async fn open_channel_with_retry(
+    handle: &Handle<ClientHandler>,
+) -> Result<russh::Channel<Msg>, String> {
+    let mut retries = 3;
+    loop {
+        match handle.channel_open_session().await {
+            Ok(channel) => return Ok(channel),
+            Err(e) => {
+                retries -= 1;
+                if retries == 0 {
+                    return Err(format!("Failed to open channel: {}", e));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+        }
+    }
+}
+
 async fn execute_command_async(
     handle: &Handle<ClientHandler>,
     command: &str,
 ) -> Result<TerminalOutput, String> {
-    // Open a session channel
-    let channel = handle
-        .channel_open_session()
-        .await
-        .map_err(|e| format!("Failed to open channel: {}", e))?;
+    // Open a session channel with retry
+    let channel = open_channel_with_retry(handle).await?;
     
     // Execute command
     channel
@@ -430,13 +526,13 @@ async fn execute_command_async(
             Some(ChannelMsg::ExitStatus { exit_status }) => {
                 exit_code = Some(exit_status as i32);
             }
-            Some(ChannelMsg::Eof) | None => {
+            None => {
                 break;
             }
             _ => {}
         }
     }
-    
+
     // Combine stdout and stderr, with stderr appended if not empty
     let mut output = String::from_utf8_lossy(&stdout).to_string();
     if !stderr.is_empty() {
@@ -445,7 +541,7 @@ async fn execute_command_async(
         }
         output.push_str(&String::from_utf8_lossy(&stderr));
     }
-    
+
     Ok(TerminalOutput::new(command, &output, exit_code))
 }
 
@@ -455,14 +551,12 @@ async fn execute_sudo_command_async(
     command: &str,
     sudo_password: &str,
 ) -> Result<TerminalOutput, String> {
-    // Open a session channel
-    let mut channel = handle
-        .channel_open_session()
-        .await
-        .map_err(|e| format!("Failed to open channel: {}", e))?;
+    // Open a session channel with retry
+    let mut channel = open_channel_with_retry(handle).await?;
 
-    // Execute command with sudo -S (read password from stdin)
-    let sudo_cmd = format!("sudo -S sh -c {}", shell_quote(command));
+    // Execute command with sudo -S (read password from stdin).
+    // `-p ''` 抑制本地化密码提示，`LANG=C` 令残留信息可预测。
+    let sudo_cmd = build_sudo_command(command, true);
     channel
         .exec(true, sudo_cmd)
         .await
@@ -470,8 +564,6 @@ async fn execute_sudo_command_async(
 
     // Write password to stdin
     // sudo -S reads password from stdin. We append newline just in case.
-    // Note: We don't send EOF immediately because the command itself might produce output
-    // and we want to keep the channel open until the process exits.
     let mut pwd_input = sudo_password.to_string();
     if !pwd_input.ends_with('\n') {
         pwd_input.push('\n');
@@ -479,6 +571,12 @@ async fn execute_sudo_command_async(
 
     channel.data(pwd_input.as_bytes()).await
         .map_err(|e| format!("Failed to write password to stdin: {}", e))?;
+
+    // Signal EOF on stdin after providing the password. This only closes the
+    // client→server input direction; the channel stays open for reading command
+    // output. Without EOF, commands that read from stdin would block until the
+    // timeout fires, surfacing as a spurious execution timeout.
+    let _ = channel.eof().await;
 
     // Read output
     let mut stdout = Vec::new();
@@ -499,7 +597,7 @@ async fn execute_sudo_command_async(
             Some(ChannelMsg::ExitStatus { exit_status }) => {
                 exit_code = Some(exit_status as i32);
             }
-            Some(ChannelMsg::Eof) | None => {
+            None => {
                 break;
             }
             _ => {}
@@ -508,23 +606,16 @@ async fn execute_sudo_command_async(
 
     let stderr_str = String::from_utf8_lossy(&stderr).to_string();
 
-    // Check for common sudo password errors
-    if stderr_str.contains("Sorry, try again") ||
-       stderr_str.contains("incorrect password") ||
-       stderr_str.contains("sudo: 3 incorrect password attempts") {
-        return Err("Sudo密码错误，请检查配置".to_string());
+    // 检查 sudo 密码/权限错误（依赖 exit code + LANG=C 下稳定的英文标记）
+    if let Some(err) = detect_sudo_failure(&stderr_str, exit_code) {
+        return Err(err);
     }
 
-    let mut output = String::from_utf8_lossy(&stdout).to_string();
-
-    // Try to remove the password prompt from output/stderr if present
-    // It usually appears on stderr, but we are appending stderr to output
-    let prompt_markers = ["[sudo] password for", "Password:"];
-
-    let clean_stderr = stderr_str.lines()
-        .filter(|line| !prompt_markers.iter().any(|m| line.contains(m)))
-        .collect::<Vec<&str>>()
-        .join("\n");
+    // 清洗残留的 sudo 提示行：stdout 和 stderr 都要处理，避免本地化提示
+    // （如 `[sudo] user 的密码：`）污染 JSON 等结构化输出的逐行解析。
+    let stdout_str = String::from_utf8_lossy(&stdout).to_string();
+    let mut output = strip_sudo_prompt(&stdout_str);
+    let clean_stderr = strip_sudo_prompt(&stderr_str);
 
     if !clean_stderr.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {
@@ -534,6 +625,28 @@ async fn execute_sudo_command_async(
     }
 
     Ok(TerminalOutput::new(command, &output, exit_code))
+}
+
+/// 批量执行单条命令，根据会话的 sudo 配置选择执行方式。
+/// - use_sudo 且有密码：通过 `sudo -S` 从 stdin 提供密码执行
+/// - use_sudo 但无密码：使用 `sudo -n`（依赖 NOPASSWD 配置）
+/// - 未启用 sudo：直接执行
+async fn execute_batch_command_async(
+    handle: &Handle<ClientHandler>,
+    command: &str,
+    use_sudo: bool,
+    sudo_password: Option<&str>,
+) -> Result<TerminalOutput, String> {
+    if use_sudo {
+        if let Some(pwd) = sudo_password {
+            execute_sudo_command_async(handle, command, pwd).await
+        } else {
+            let final_command = build_sudo_command(command, false);
+            execute_command_async(handle, &final_command).await
+        }
+    } else {
+        execute_command_async(handle, command).await
+    }
 }
 
 async fn list_sftp_files_async(
@@ -817,7 +930,9 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                     let result = connect_async(&host, port, &username, password.as_deref(), private_key.as_deref()).await;
                     match result {
                         Ok(handle) => {
-                            let session_id = format!("{}@{}:{}", username, host, port);
+                            // 附加 uuid 后缀，保证同一台服务器的多个连接实例拥有唯一会话 ID，
+                            // 避免后端 sessions map 与前端 tab 被同名 key 覆盖。
+                            let session_id = format!("{}@{}:{}#{}", username, host, port, uuid::Uuid::new_v4());
                             let info = ConnectionInfo {
                                 host: host.clone(),
                                 port,
@@ -855,7 +970,8 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                                     if let Some(pwd) = effective_pwd {
                                         execute_sudo_command_async(&handle, &command, pwd).await
                                     } else {
-                                        let final_command = format!("sudo sh -c {}", shell_quote(&command));
+                                        // 无密码时依赖 NOPASSWD（sudo -n），并统一走清洗逻辑。
+                                        let final_command = build_sudo_command(&command, false);
                                         execute_command_async(&handle, &final_command).await
                                     }
                                 } else {
@@ -1199,19 +1315,57 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                         let cmd = crate::packet_capture::generate_tcpdump_command(&interface, filter.as_deref(), count);
                         let window_clone = window.clone();
 
+                        let use_sudo = session.use_sudo;
+                        let sudo_password = session.sudo_password.clone();
+                        let login_password = session.login_password.clone();
+
                         // Open the channel BEFORE spawning the task (can't clone Handle)
                         match session.handle.channel_open_session().await {
                             Ok(mut channel) => {
-                                // Execute the capture command
-                                let cmd_bytes: Vec<u8> = cmd.as_bytes().to_vec();
+                                // 决定 sudo 策略：
+                                // - 有密码：`sudo -S`，随后把密码写入 stdin。
+                                // - 无密码：`sudo -n`（依赖 NOPASSWD），绝不能用 `sudo -S`，
+                                //   否则 sudo 会一直阻塞等待 stdin 上的密码，tcpdump 永远不启动，
+                                //   表现为“开启 sudo 也无法抓包”。
+                                let effective_pwd = if use_sudo {
+                                    sudo_password.or(login_password)
+                                } else {
+                                    None
+                                };
+                                let final_cmd = if use_sudo {
+                                    build_sudo_command(&cmd, effective_pwd.is_some())
+                                } else {
+                                    cmd.clone()
+                                };
+                                let cmd_bytes: Vec<u8> = final_cmd.as_bytes().to_vec();
                                 if let Err(e) = channel.exec(true, cmd_bytes.as_slice()).await {
                                     let _ = window_clone.emit("packet_capture_error", format!("Failed to execute command: {}", e));
                                 } else {
+                                    // 通过 stdin 提供 sudo 密码（仅在 `sudo -S` 分支）。
+                                    if let Some(pwd) = effective_pwd {
+                                        let mut pwd_input = pwd.to_string();
+                                        if !pwd_input.ends_with('\n') {
+                                            pwd_input.push('\n');
+                                        }
+                                        let _ = channel.data(pwd_input.as_bytes()).await;
+                                    }
+
+                                    // 关闭 client→server 输入方向。仅关闭输入，channel 仍可读输出。
+                                    // 与 execute_sudo_command_async 保持一致：不发送 EOF 时，
+                                    // sudo/子进程读取 stdin 会一直阻塞，导致 tcpdump 无输出。
+                                    let _ = channel.eof().await;
+
                                     // Spawn capture task to read output
                                     tokio::spawn(async move {
                                         let mut cancel_rx = cancel_rx;
                                         let mut buffer = Vec::new();
                                         let mut packet_id = 0;
+                                        // 记录 stderr 与是否已上报过错误，便于在进程异常退出时
+                                        // 把真实原因（tcpdump 报错、sudo 失败等）反馈给前端，
+                                        // 避免“无任何提示地失败”。
+                                        let mut stderr_acc = String::new();
+                                        let mut error_reported = false;
+                                        let mut exit_code: Option<i32> = None;
 
                                         loop {
                                             tokio::select! {
@@ -1224,13 +1378,13 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                                                     match msg {
                                                         Some(ChannelMsg::Data { data }) => {
                                                             buffer.extend_from_slice(&data);
-                                                            
+
                                                             // Process lines
                                                             while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
                                                                 let line_bytes = buffer.drain(..=pos).collect::<Vec<u8>>();
                                                                 let line = String::from_utf8_lossy(&line_bytes);
                                                                 let trimmed_line = line.trim();
-                                                                
+
                                                                 if !trimmed_line.is_empty() {
                                                                     packet_id += 1;
                                                                     let packet = crate::packet_capture::parse_tcpdump_line(trimmed_line, packet_id);
@@ -1238,11 +1392,34 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                                                                 }
                                                             }
                                                         }
-                                                        Some(ChannelMsg::ExtendedData { data, .. }) => {
+                                                        Some(ChannelMsg::ExtendedData { data, ext }) => {
                                                             let info = String::from_utf8_lossy(&data);
+                                                            if ext == 1 {
+                                                                let info_str = info.to_string();
+                                                                stderr_acc.push_str(&info_str);
+                                                                let lower = info_str.to_lowercase();
+                                                                if lower.contains("sorry, try again")
+                                                                    || lower.contains("incorrect password")
+                                                                    || lower.contains("a password is required") {
+                                                                    let _ = window_clone.emit("packet_capture_error", "Sudo密码错误或无Sudo权限，请检查连接设置中的 Sudo 密码".to_string());
+                                                                    error_reported = true;
+                                                                } else if lower.contains("permission denied") || lower.contains("must be run as root") || lower.contains("operation not permitted") {
+                                                                    let _ = window_clone.emit("packet_capture_error", "抓包权限不足，请在连接设置中开启“使用 Sudo 权限”".to_string());
+                                                                    error_reported = true;
+                                                                } else if lower.contains("not found") || info_str.contains("未找到命令") || lower.contains("command not found") {
+                                                                    let _ = window_clone.emit("packet_capture_error", "远程服务器未安装 tcpdump 工具，请先安装。".to_string());
+                                                                    error_reported = true;
+                                                                } else if lower.contains("no such device") || lower.contains("that device") {
+                                                                    let _ = window_clone.emit("packet_capture_error", format!("网络接口不可用: {}", info_str.trim()));
+                                                                    error_reported = true;
+                                                                }
+                                                            }
                                                             let _ = window_clone.emit("packet_capture_info", info.to_string());
                                                         }
-                                                        Some(ChannelMsg::ExitStatus { .. }) | Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                                                        Some(ChannelMsg::ExitStatus { exit_status }) => {
+                                                            exit_code = Some(exit_status as i32);
+                                                        }
+                                                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
                                                             break;
                                                         }
                                                         _ => {}
@@ -1250,7 +1427,20 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                                                 }
                                             }
                                         }
-                                        
+
+                                        // 进程异常退出且尚未上报具体错误时，把 stderr 兜底反馈给前端，
+                                        // 让“启用 sudo 仍无法抓包”这类问题可被诊断，而非静默失败。
+                                        if !error_reported && exit_code.unwrap_or(0) != 0 {
+                                            let detail = strip_sudo_prompt(&stderr_acc);
+                                            let detail = detail.trim();
+                                            let msg = if detail.is_empty() {
+                                                format!("抓包进程异常退出 (exit code {})", exit_code.unwrap_or(-1))
+                                            } else {
+                                                format!("抓包失败: {}", detail)
+                                            };
+                                            let _ = window_clone.emit("packet_capture_error", msg);
+                                        }
+
                                         let _ = window_clone.emit("packet_capture_stopped", ());
                                     });
                                 }
@@ -1284,11 +1474,35 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                 WorkerCommand::ExecuteBatch { session_id, commands, response_tx } => {
                     if let Some(session) = sessions.get(&session_id) {
                         let handle = Arc::clone(&session.handle);
+                        let use_sudo = session.use_sudo;
+                        // Prefer the dedicated sudo password, fall back to the login password.
+                        let effective_pwd = if use_sudo {
+                            session.sudo_password.clone().or_else(|| session.login_password.clone())
+                        } else {
+                            None
+                        };
                         tokio::spawn(async move {
-                            // Execute all commands in parallel using separate SSH channels
+                            // Execute commands with bounded concurrency using separate SSH channels.
+                            // Restrict maximum active channels to 4 so we don't hit SSHD's MaxSessions limit.
+                            let sem = Arc::new(tokio::sync::Semaphore::new(4));
                             let mut futures = Vec::with_capacity(commands.len());
                             for cmd in &commands {
-                                futures.push(execute_command_async(&handle, cmd));
+                                let sem_clone = Arc::clone(&sem);
+                                let handle_clone = Arc::clone(&handle);
+                                let cmd_clone = cmd.clone();
+                                let pwd_clone = effective_pwd.clone();
+                                futures.push(async move {
+                                    let _permit = match sem_clone.acquire().await {
+                                        Ok(p) => p,
+                                        Err(e) => return Err(e.to_string()),
+                                    };
+                                    execute_batch_command_async(
+                                        &handle_clone,
+                                        &cmd_clone,
+                                        use_sudo,
+                                        pwd_clone.as_deref(),
+                                    ).await
+                                });
                             }
                             let results = futures::future::join_all(futures).await;
                             let _ = response_tx.send(Ok(results));
@@ -1788,11 +2002,11 @@ impl SSHManagerRussh {
             let quoted_user = shell_quote(user);
             let quoted_command = shell_quote(command);
             format!(
-                "if command -v sudo >/dev/null 2>&1; then sudo -n -u {} sh -c {}; else su - {} -c {}; fi",
-                quoted_user,
-                quoted_command,
-                quoted_user,
-                quoted_command,
+                "LANG=C LC_ALL=C sh -c {}",
+                shell_quote(&format!(
+                    "if command -v sudo >/dev/null 2>&1; then sudo -n -u {} sh -c {}; else su - {} -c {}; fi",
+                    quoted_user, quoted_command, quoted_user, quoted_command,
+                ))
             )
         } else {
             command.to_string()
@@ -1809,6 +2023,7 @@ impl SSHManagerRussh {
                 host: info.host,
                 port: info.port,
                 username: info.username,
+                session_id: self.get_current_session_id().unwrap_or_default(),
                 last_activity: chrono::Utc::now(),
             })
         } else {
@@ -1909,8 +2124,12 @@ impl SSHManagerRussh {
         terminal_id: &str,
         cols: u32,
         rows: u32,
+        session_id: Option<String>,
     ) -> Result<(), String> {
-        let session_id = self.get_current_session()?;
+        let session_id = match session_id {
+            Some(id) => id,
+            None => self.get_current_session()?,
+        };
         
         let (response_tx, response_rx) = mpsc::channel();
         

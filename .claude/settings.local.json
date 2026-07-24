@@ -23,7 +23,10 @@
       "Bash(cargo build *)",
       "Bash(python3 -c ' *)",
       "Bash(python3 *)",
-      "Bash(npx vitest *)"
+      "Bash(npx vitest *)",
+      "Bash(cargo test *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(npm run *)"
     ]
   }
 }

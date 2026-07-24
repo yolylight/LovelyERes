@@ -193,7 +193,7 @@ export class LoginHistoryContextMenu extends BaseContextMenu {
         actionName: '反向DNS解析'
       },
       'auth-logs': {
-        command: `grep "${user}" /var/log/auth.log 2>/dev/null | tail -50 || journalctl -u sshd --no-pager | grep "${user}" | tail -50`,
+        command: `grep "${user}" /var/log/auth.log 2>/dev/null | tail -50 || lastlog -u "${user}" 2>/dev/null || journalctl -u sshd --no-pager | grep "${user}" | tail -50`,
         title: `认证日志 - ${user}`,
         actionName: '查看认证日志'
       },

@@ -62,6 +62,47 @@ export function initGlobalFunctions(deps: GlobalFunctionsDeps): void {
     persistOpenGroups();
   };
 
+  // ──── 侧边栏：页内子导航（系统信息 / SFTP）展开与收起 ────
+  function getCollapsedSubtrees(): string[] {
+    try {
+      return JSON.parse(localStorage.getItem('sidebar-subtrees-collapsed') || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  function setSubtreeCollapsed(navId: string, collapsed: boolean): void {
+    const list = getCollapsedSubtrees();
+    const set = new Set(list);
+    if (collapsed) {
+      set.add(navId);
+    } else {
+      set.delete(navId);
+    }
+    localStorage.setItem('sidebar-subtrees-collapsed', JSON.stringify(Array.from(set)));
+  }
+
+  (window as any).isSubtreeCollapsed = (navId: string): boolean => {
+    return getCollapsedSubtrees().includes(navId);
+  };
+
+  (window as any).toggleSidebarSubtree = (navId: string, forceState?: boolean) => {
+    const wrap = document.querySelector(`.sidebar-item-wrap[data-subtree-id="${navId}"]`);
+    const isCurrentlyCollapsed = wrap ? wrap.classList.contains('collapsed') : (window as any).isSubtreeCollapsed(navId);
+    const targetCollapsed = forceState !== undefined ? forceState : !isCurrentlyCollapsed;
+
+    setSubtreeCollapsed(navId, targetCollapsed);
+
+    if (wrap) {
+      wrap.classList.toggle('expanded', !targetCollapsed);
+      wrap.classList.toggle('collapsed', targetCollapsed);
+      const subtree = wrap.querySelector('.sidebar-subtree') as HTMLElement;
+      if (subtree) {
+        subtree.style.display = targetCollapsed ? 'none' : '';
+      }
+    }
+  };
+
   // ──── 侧边栏：搜索过滤 ────
   (window as any).filterSidebar = (query: string) => {
     const q = (query || '').trim().toLowerCase();
@@ -337,6 +378,13 @@ export function initGlobalFunctions(deps: GlobalFunctionsDeps): void {
   (window as any).switchPage = (pageId: string) => {
     console.log('🔄 切换页面:', pageId);
 
+    // SSH 终端是独立弹出窗口，不是应用内页面：
+    // 只打开/聚焦弹窗，保持主界面停留在当前页面，避免跳转。
+    if (pageId === 'ssh-terminal') {
+      openSSHTerminalWindow();
+      return;
+    }
+
     // 取消前一个页面的异步操作
     // quickDetection cancelScan removed
 
@@ -376,15 +424,6 @@ export function initGlobalFunctions(deps: GlobalFunctionsDeps): void {
       } else if (pageId === 'web-terminal') {
         (window as any).openWebTerminal?.();
         return;
-      } else if (pageId === 'ssh-terminal') {
-        openSSHTerminalWindow();
-        setTimeout(() => {
-          const sm2 = app?.getStateManager();
-          if (app && sm2) {
-            sm2.setCurrentPage('system-info');
-            app.render();
-          }
-        }, 100);
       } else if (pageId === 'kubernetes') {
         // Lazy init K8s page manager
         if (!(window as any).kubernetesPageManager) {
@@ -479,13 +518,10 @@ export function initGlobalFunctions(deps: GlobalFunctionsDeps): void {
         (window as any).__jhuManager?.deactivate?.();
       }
 
-      // 系统概览：仅在无缓存时才重新加载
+      // 系统调查：切回时按当前激活的子 Tab 同步模板并渲染数据
       if (pageId === 'system-info' && sshConnectionManager.isConnected()) {
-        const cache = (window as any).systemInfoCache;
-        if (cache && cache.detailedInfo) {
-          // 有缓存，直接用缓存渲染，不重新请求
-          (window as any).loadSystemDetailedInfo(false);
-        }
+        const activeTabId = (window as any).getActiveTabId?.() || 'processes';
+        (window as any).switchSystemInfoTab?.(activeTabId);
       }
     }
   };

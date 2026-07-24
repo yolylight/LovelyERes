@@ -34,11 +34,16 @@ export class SystemInfoRenderer {
    */
   public renderSystemInfo(state: AppState): string {
     // 子导航已并入主侧边栏左侧的 section-tree（见 renderSectionTree），
-    // 这里只渲染全宽的内容区，默认展示进程详情。
+    // 动态获取当前激活的子 tab（默认 processes），渲染其内容壳
+    let activeTab = 'processes';
+    try {
+      activeTab = (window as any).getActiveTabId?.() || 'processes';
+    } catch { /* 非浏览器环境 */ }
+
     return `
       <div class="system-info-container">
         <div class="system-info-content" id="system-info-content">
-          ${this.renderSystemInfoTab(state, 'processes')}
+          ${this.renderSystemInfoTab(state, activeTab)}
         </div>
       </div>
     `;
@@ -67,7 +72,7 @@ export class SystemInfoRenderer {
     // 侧边栏重渲时保留当前激活的 tab 高亮；默认进程详情
     let activeTab = 'processes';
     try {
-      activeTab = document.querySelector('.sidebar-item[data-tab].active')?.getAttribute('data-tab') || 'processes';
+      activeTab = (window as any).getActiveTabId?.() || document.querySelector('.sidebar-item[data-tab].active')?.getAttribute('data-tab') || 'processes';
     } catch { /* 非浏览器环境 */ }
 
     type Leaf = { id: string; label: string; icon: any };

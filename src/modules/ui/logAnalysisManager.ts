@@ -251,7 +251,7 @@ async function runMultiLogAnalysis(): Promise<void> {
   logContainer.innerHTML = `<div class="loading-placeholder"><div class="spinner"></div><p>正在关联分析多个日志源...</p></div>`;
 
   try {
-    const logPaths = ['/var/log/auth.log', '/var/log/syslog', '/var/log/secure', '/var/log/messages'];
+    const logPaths = ['/var/log/auth.log', '/var/log/syslog', '/var/log/secure', '/var/log/messages', '/var/log/lastlog'];
     const result: any = await invoke('analyze_multi_log', { logPaths, lineLimit: 500 });
 
     // 更新威胁面板
@@ -296,7 +296,7 @@ async function executeIocSearch(): Promise<void> {
   if (!raw) return;
 
   const indicators = raw.split(/[,\n]/).map(s => s.trim()).filter(s => s.length > 0);
-  const logPaths = ['/var/log/auth.log', '/var/log/syslog', '/var/log/secure', '/var/log/messages', '/var/log/audit/audit.log'];
+  const logPaths = ['/var/log/auth.log', '/var/log/syslog', '/var/log/secure', '/var/log/messages', '/var/log/audit/audit.log', '/var/log/lastlog'];
 
   window.showNotification?.(`正在搜索 ${indicators.length} 个 IOC...`, 'info');
 
@@ -419,45 +419,109 @@ function exportLogReport(): void {
 
 // ==================== 日志文件列表 ====================
 
+let cachedLogFiles: any[] = [];
+let cachedContainers: any[] = [];
+
+function formatFileSize(size: number): string {
+  if (!size || size <= 0) return '0 B';
+  if (size > 1048576) return `${(size / 1048576).toFixed(1)} MB`;
+  return `${(size / 1024).toFixed(1)} KB`;
+}
+
+function renderLogFileOptions(keyword: string = ''): void {
+  const container = document.getElementById('log-file-options-list');
+  if (!container) return;
+
+  const state = (window as any).logAnalysisState || {};
+  const currentPath = state.logPath || '/var/log/auth.log';
+  const kw = keyword.trim().toLowerCase();
+
+  let html = '';
+
+  // 过滤系统日志
+  const filteredFiles = cachedLogFiles.filter(f => {
+    if (!kw) return true;
+    const nameMatch = f.name?.toLowerCase().includes(kw);
+    const pathMatch = f.path?.toLowerCase().includes(kw);
+    const sizeMatch = formatFileSize(f.size).toLowerCase().includes(kw);
+    return nameMatch || pathMatch || sizeMatch;
+  });
+
+  // 过滤 Docker 容器
+  const filteredContainers = cachedContainers.filter(c => {
+    if (!kw) return true;
+    const id = c.Id || c.id || '';
+    const name = c.Name || c.name || (Array.isArray(c.Names || c.names) ? (c.Names || c.names)[0]?.replace(/^\//, '') : '');
+    return id.toLowerCase().includes(kw) || String(name).toLowerCase().includes(kw);
+  });
+
+  if (filteredContainers.length > 0) {
+    html += `<div class="la-option-group-title">Docker 容器 (${filteredContainers.length})</div>`;
+    filteredContainers.forEach(c => {
+      const id = c.Id || c.id;
+      const name = c.Name || c.name || (Array.isArray(c.Names || c.names) ? (c.Names || c.names)[0]?.replace(/^\//, '') : 'Unknown');
+      const stateStr = c.State || c.state;
+      if (!id) return;
+      const shortId = String(id).substring(0, 12);
+      const displayName = typeof name === 'string' ? name.replace(/^\//, '') : 'Unknown';
+      const icon = stateStr === 'running' ? '🟢' : '🔴';
+      const val = `docker:${shortId}`;
+      const isSelected = val === currentPath;
+      html += `
+        <div class="la-select-option ${isSelected ? 'selected' : ''}"
+             onclick="window.selectLogFileOption('${val}', 'Container ${displayName}')">
+          <span class="la-option-name">${icon} ${displayName} <small style="opacity:0.7">(${shortId})</small></span>
+          ${isSelected ? '<span class="la-option-check">✓</span>' : ''}
+        </div>
+      `;
+    });
+  }
+
+  if (filteredFiles.length > 0) {
+    html += `<div class="la-option-group-title">系统日志 (按文件大小降序)</div>`;
+    filteredFiles.forEach(f => {
+      const sizeStr = formatFileSize(f.size);
+      const recent = Date.now() - parseInt(f.modified || '0') * 1000 < 86400000;
+      const isSelected = f.path === currentPath;
+      html += `
+        <div class="la-select-option ${isSelected ? 'selected' : ''}"
+             onclick="window.selectLogFileOption('${f.path}', '${f.name}')">
+          <div class="la-option-main">
+            <span class="la-option-name">${recent ? '🕒 ' : ''}${f.name}</span>
+            <span class="la-option-path" title="${f.path}">${f.path}</span>
+          </div>
+          <span class="la-option-size">${sizeStr}</span>
+          ${isSelected ? '<span class="la-option-check">✓</span>' : ''}
+        </div>
+      `;
+    });
+  }
+
+  if (!html) {
+    html = `<div class="la-select-empty">未匹配到相关日志文件</div>`;
+  }
+
+  container.innerHTML = html;
+}
+
 async function loadLogFileList(): Promise<void> {
-  const select = document.getElementById('log-file-select') as HTMLSelectElement;
-  if (!select) return;
   try {
     const [logFiles, containers] = await Promise.all([
       invoke('list_log_files') as Promise<any[]>,
       invoke('docker_list_containers').catch(() => []) as Promise<any[]>,
     ]);
 
-    const currentValue = select.value;
-    let html = '';
-
-    if (Array.isArray(containers) && containers.length > 0) {
-      html += `<optgroup label="Docker 容器">`;
-      containers.forEach((c: any) => {
-        const id = c.Id || c.id;
-        const name = c.Name || c.name || (Array.isArray(c.Names || c.names) ? (c.Names || c.names)[0]?.replace(/^\//, '') : 'Unknown');
-        const state = c.State || c.state;
-        if (!id) return;
-        const shortId = String(id).substring(0, 12);
-        const displayName = typeof name === 'string' ? name.replace(/^\//, '') : 'Unknown';
-        const icon = state === 'running' ? '🟢' : '🔴';
-        const val = `docker:${shortId}`;
-        html += `<option value="${val}" ${val === currentValue ? 'selected' : ''}>${icon} ${displayName} (${shortId})</option>`;
-      });
-      html += `</optgroup>`;
+    if (Array.isArray(logFiles)) {
+      // 按照文件大小 size 降序排列！
+      cachedLogFiles = logFiles.sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0));
+    } else {
+      cachedLogFiles = [];
     }
 
-    if (Array.isArray(logFiles) && logFiles.length > 0) {
-      html += `<optgroup label="系统日志">`;
-      logFiles.forEach((f: any) => {
-        const sizeStr = f.size > 1048576 ? `${(f.size / 1048576).toFixed(1)} MB` : `${(f.size / 1024).toFixed(1)} KB`;
-        const recent = Date.now() - parseInt(f.modified) * 1000 < 86400000;
-        html += `<option value="${f.path}" ${f.path === currentValue ? 'selected' : ''}>${recent ? '🕒 ' : ''}${f.name} (${sizeStr})</option>`;
-      });
-      html += `</optgroup>`;
-    }
+    cachedContainers = Array.isArray(containers) ? containers : [];
 
-    if (html) select.innerHTML = html;
+    const searchInput = document.getElementById('log-file-search-input') as HTMLInputElement;
+    renderLogFileOptions(searchInput?.value || '');
   } catch (error) {
     console.error('加载日志源列表失败:', error);
   }
@@ -477,6 +541,57 @@ export function initLogAnalysisManager(): void {
   (window as any).addCustomRule = addCustomRule;
   (window as any).removeCustomRule = removeCustomRule;
   (window as any).exportLogReport = exportLogReport;
+
+  (window as any).toggleLogFileDropdown = (e: MouseEvent) => {
+    e.stopPropagation();
+    const menu = document.getElementById('log-file-dropdown-menu');
+    if (!menu) return;
+    const isVisible = menu.style.display !== 'none';
+    menu.style.display = isVisible ? 'none' : 'block';
+
+    if (!isVisible) {
+      const searchInput = document.getElementById('log-file-search-input') as HTMLInputElement;
+      if (searchInput) {
+        searchInput.focus();
+      }
+      renderLogFileOptions(searchInput?.value || '');
+    }
+  };
+
+  (window as any).filterLogFileOptions = (keyword: string) => {
+    renderLogFileOptions(keyword);
+  };
+
+  (window as any).selectLogFileOption = (path: string, label: string) => {
+    (window as any).logAnalysisState = (window as any).logAnalysisState || {};
+    (window as any).logAnalysisState.logPath = path;
+    (window as any).logAnalysisState.page = 1;
+
+    const labelEl = document.getElementById('log-file-selected-label');
+    if (labelEl) labelEl.textContent = label;
+    const triggerEl = document.getElementById('log-file-select-trigger');
+    if (triggerEl) triggerEl.title = path;
+
+    const app = (window as any).app;
+    if (app) {
+      const renderer = app.getStateManager?.().getUIRenderer?.()?.['logAnalysisRenderer'];
+      if (renderer) renderer.setLogPath(path);
+    }
+
+    const menu = document.getElementById('log-file-dropdown-menu');
+    if (menu) menu.style.display = 'none';
+
+    refreshLogAnalysis();
+  };
+
+  // 全局点击监听：收起下拉菜单
+  document.addEventListener('click', (e) => {
+    const container = document.getElementById('log-file-select-container');
+    const menu = document.getElementById('log-file-dropdown-menu');
+    if (menu && container && !container.contains(e.target as Node)) {
+      menu.style.display = 'none';
+    }
+  });
 
   // Tab 切换 — 事件委托
   document.addEventListener('click', (e) => {
@@ -571,3 +686,4 @@ export function initLogAnalysisManager(): void {
     refreshLogAnalysis();
   };
 }
+

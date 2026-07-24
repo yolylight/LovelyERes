@@ -58,6 +58,7 @@ export interface BaselineCategory {
   title: string;
   icon: string;       // icon-park 图标名
   hint?: string;
+  isReadOnly?: boolean; // 新增：标注该分类为只读速查/排查类分类，不渲染推荐值和编辑输入框
   items: BaselineConfigItem[];
 }
 
@@ -961,7 +962,7 @@ const userAccessItems: BaselineConfigItem[] = [
     recommendedValue: '无 NOPASSWD 条目',
     riskLevel: 'high',
     readCommand: `grep -r 'NOPASSWD' /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -v '^#' || echo '无 NOPASSWD 条目'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '请手动编辑 /etc/sudoers（使用 visudo）以移除 NOPASSWD 条目'`,
     backupCommand: backup('/etc/sudoers'),
     complianceRef: 'CIS 5.2',
@@ -1622,7 +1623,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '仅 root',
     riskLevel: 'critical',
     readCommand: `awk -F: '$3==0{print $1}' /etc/passwd 2>/dev/null || echo 'unknown'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '发现非 root 的 UID=0 用户请手动处理: usermod -u <new_uid> <username> 或 userdel <username>'`,
     backupCommand: backup('/etc/passwd'),
     complianceRef: '应急响应必查',
@@ -1637,7 +1638,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '无空密码账户',
     riskLevel: 'critical',
     readCommand: `awk -F: '($2==""){print $1}' /etc/shadow 2>/dev/null || echo 'none'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '请使用 passwd -l <username> 锁定空密码账户，或使用 passwd <username> 设置密码'`,
     backupCommand: backup('/etc/shadow'),
     complianceRef: '等保2.0 身份鉴别',
@@ -1652,7 +1653,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '无可疑条目',
     riskLevel: 'critical',
     readCommand: `echo '=== system crontab ===' && cat /etc/crontab 2>/dev/null | grep -v '^#' | grep -v '^$' && echo '=== cron.d ===' && ls /etc/cron.d/ 2>/dev/null && echo '=== user crontabs ===' && for u in $(cut -d: -f1 /etc/passwd); do crontab -l -u $u 2>/dev/null | grep -v '^#' | grep -v '^$' && echo "  [user: $u]"; done; true`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '清理可疑 crontab: crontab -r -u <username>, 或编辑 /etc/crontab'`,
     backupCommand: 'true',
     complianceRef: '应急响应必查',
@@ -1667,7 +1668,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '仅授权密钥',
     riskLevel: 'critical',
     readCommand: `for h in $(awk -F: '$3>=0{print $6}' /etc/passwd | sort -u); do if [ -f "$h/.ssh/authorized_keys" ]; then echo "=== $h/.ssh/authorized_keys ===" && wc -l < "$h/.ssh/authorized_keys" && echo "keys"; fi; done; true`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '清理非授权 SSH 密钥: 编辑对应用户的 ~/.ssh/authorized_keys 文件'`,
     backupCommand: 'true',
     complianceRef: '应急响应必查',
@@ -1681,8 +1682,8 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     defaultValue: '',
     recommendedValue: '无可疑命令',
     riskLevel: 'critical',
-    readCommand: `for h in $(awk -F: '$3>=1000||$3==0{print $6}' /etc/passwd | sort -u); do for f in .bashrc .bash_profile .profile; do if [ -f "$h/$f" ]; then r=$(grep -inE '(curl|wget|nc |ncat|bash -i|python.*socket|perl.*socket|/dev/tcp/|exec [0-9]|base64|eval)' "$h/$f" 2>/dev/null); if [ -n "$r" ]; then echo "=== $h/$f ===" && echo "$r"; fi; fi; done; done; echo 'scan done'`,
-    parseRegex: '(.+)',
+    readCommand: `for h in $(awk -F: '$3>=1000||$3==0{print $6}' /etc/passwd | sort -u); do for f in .bashrc .bash_profile .profile .zshrc; do if [ -f "$h/$f" ]; then r=$(grep -inE '(curl|wget|nc |ncat|bash -i|python.*socket|perl.*socket|/dev/tcp/|exec [0-9]|base64|eval)' "$h/$f" 2>/dev/null | grep -vE '^\s*#' | grep -vE 'eval\s+["\`]?\$\((dircolors|opam|pyenv|rbenv|starship|zoxide|conda|completion)'); if [ -n "$r" ]; then echo "=== $h/$f ===" && echo "$r"; fi; fi; done; done; echo 'scan done'`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '发现可疑条目请手动清理对应用户的 Shell 配置文件'`,
     backupCommand: 'true',
     complianceRef: '应急响应必查',
@@ -1697,7 +1698,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '为空或不存在',
     riskLevel: 'critical',
     readCommand: `if [ -f /etc/ld.so.preload ]; then cat /etc/ld.so.preload; else echo '(文件不存在 - 正常)'; fi && echo '---' && env | grep -i LD_PRELOAD || echo 'no LD_PRELOAD env'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '清理 LD_PRELOAD: > /etc/ld.so.preload && unset LD_PRELOAD'`,
     backupCommand: `cp -n /etc/ld.so.preload /etc/ld.so.preload.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null; true`,
     complianceRef: '应急响应必查',
@@ -1712,7 +1713,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '无 (deleted) 进程',
     riskLevel: 'critical',
     readCommand: `ls -la /proc/*/exe 2>/dev/null | grep '(deleted)' | head -20 || echo '(无异常)'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '使用 kill -9 <pid> 终止可疑进程，然后排查其来源'`,
     backupCommand: 'true',
     complianceRef: '应急响应必查',
@@ -1727,7 +1728,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '无异常',
     riskLevel: 'critical',
     readCommand: `find /tmp /var/tmp /dev/shm -name 'su' -o -name 'chsh' -o -name 'chfn' -o -name 'login' -o -name 'passwd' 2>/dev/null | while read f; do file "$f" 2>/dev/null | grep -q 'sshd' && echo "FOUND: $f -> sshd softlink backdoor!"; done; echo 'scan complete' && netstat -tlnp 2>/dev/null | grep sshd | grep -v ':22 ' || ss -tlnp | grep sshd | grep -v ':22 '; true`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '删除可疑软链接并杀死相关进程: rm -f <path> && kill <pid>'`,
     backupCommand: 'true',
     complianceRef: '应急响应高频题型',
@@ -1742,7 +1743,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '无可疑条目',
     riskLevel: 'high',
     readCommand: `(cat /etc/inetd.conf 2>/dev/null | grep -v '^#' | grep -v '^$' || echo '(无 inetd.conf)') && echo '---' && (ls /etc/xinetd.d/ 2>/dev/null || echo '(无 xinetd.d)')`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '编辑 /etc/inetd.conf 移除可疑条目，或 systemctl stop xinetd'`,
     backupCommand: `cp -n /etc/inetd.conf /etc/inetd.conf.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null; true`,
   },
@@ -1756,7 +1757,7 @@ const emergencyResponseItems: BaselineConfigItem[] = [
     recommendedValue: '无异常',
     riskLevel: 'critical',
     readCommand: `echo '=== suspicious kernel modules ===' && lsmod | grep -ivE '(ext4|xfs|btrfs|nf_|ip_|xt_|nft_|bridge|veth|overlay|dm_|sd_|ahci|nvme|usb|hid|input|drm|snd|video|net|e1000|virtio|vmw|xen|kvm)' | head -10 && echo '=== /dev suspicious files ===' && find /dev -type f ! -name 'null' ! -name 'zero' ! -name 'random' ! -name 'urandom' ! -name 'tty' ! -name 'console' ! -name 'ptmx' ! -name 'full' ! -name 'stderr' ! -name 'stdout' ! -name 'stdin' 2>/dev/null | head -10 && echo '=== hidden files in /tmp ===' && ls -la /tmp/.[!.]* /var/tmp/.[!.]* /dev/shm/.[!.]* 2>/dev/null | head -10; echo 'scan done'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '建议安装 rkhunter 或 chkrootkit 做完整扫描: apt install rkhunter && rkhunter --check'`,
     backupCommand: 'true',
     complianceRef: '应急响应高级排查',
@@ -1857,7 +1858,7 @@ const macSecurityItems: BaselineConfigItem[] = [
     recommendedValue: '全部 enforce',
     riskLevel: 'medium',
     readCommand: `aa-status 2>/dev/null | grep -E '(profiles are in|processes are in)' || echo 'AppArmor not available'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '将 complain 模式的配置文件改为 enforce: aa-enforce /etc/apparmor.d/*'`,
     backupCommand: 'true',
   },
@@ -1974,7 +1975,7 @@ const webshellScanItems: BaselineConfigItem[] = [
     recommendedValue: '无异常可写文件',
     riskLevel: 'high',
     readCommand: `for d in /var/www /usr/share/nginx /opt/lampp/htdocs /home/www; do [ -d "$d" ] && find "$d" -type f -writable -newer /etc/passwd -name "*.php" -o -name "*.jsp" -o -name "*.asp" -o -name "*.aspx" -o -name "*.py" -o -name "*.pl" -o -name "*.cgi" 2>/dev/null | head -20; done; echo 'scan done'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '发现可疑文件请手动检查内容并删除'`,
     backupCommand: 'true',
     complianceRef: '应急响应 Webshell 排查',
@@ -1989,7 +1990,7 @@ const webshellScanItems: BaselineConfigItem[] = [
     recommendedValue: '无可疑文件',
     riskLevel: 'critical',
     readCommand: `for d in /var/www /usr/share/nginx/html; do [ -d "$d" ] && grep -rlE '(eval\\s*\\(\\s*\\$_(GET|POST|REQUEST|COOKIE)|base64_decode\\s*\\(\\s*\\$|assert\\s*\\(\\s*\\$|passthru|shell_exec|system\\s*\\(\\s*\\$|exec\\s*\\(\\s*\\$|str_rot13|gzuncompress|gzinflate)' "$d" --include="*.php" 2>/dev/null | head -20; done; echo 'scan done'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '发现可疑 PHP 文件请立即隔离并分析'`,
     backupCommand: 'true',
     complianceRef: '应急响应高频题型',
@@ -2004,7 +2005,7 @@ const webshellScanItems: BaselineConfigItem[] = [
     recommendedValue: '无可疑文件',
     riskLevel: 'critical',
     readCommand: `for d in /var/www /opt/tomcat/webapps /usr/local/tomcat/webapps; do [ -d "$d" ] && grep -rlE '(Runtime\\.getRuntime|ProcessBuilder|exec\\(request|defineClass|ClassLoader|\\bshell\\b.*\\bexec\\b)' "$d" --include="*.jsp" --include="*.jspx" 2>/dev/null | head -20; done; echo 'scan done'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '发现可疑 JSP 文件请立即隔离并分析'`,
     backupCommand: 'true',
     complianceRef: '应急响应高频题型',
@@ -2018,8 +2019,8 @@ const webshellScanItems: BaselineConfigItem[] = [
     defaultValue: '',
     recommendedValue: '仅预期变更',
     riskLevel: 'high',
-    readCommand: `find /var/www /opt /tmp /usr/share/nginx -type f \\( -name "*.php" -o -name "*.jsp" -o -name "*.py" -o -name "*.sh" -o -name "*.pl" \\) -mtime -7 2>/dev/null | head -30 || echo '(未找到 Web 目录或无近期修改)'`,
-    parseRegex: '(.+)',
+    readCommand: `res=$(find /var/www /opt /tmp /usr/share/nginx -type f \\( -name "*.php" -o -name "*.jsp" -o -name "*.py" -o -name "*.sh" -o -name "*.pl" \\) -mtime -7 2>/dev/null | head -30); [ -n "$res" ] && echo "$res" || echo '(未找到 Web 目录或无近期修改的脚本文件)'`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '检查上述文件内容，确认是否为恶意文件'`,
     backupCommand: 'true',
     complianceRef: '应急响应时间线分析',
@@ -2034,7 +2035,7 @@ const webshellScanItems: BaselineConfigItem[] = [
     recommendedValue: '无可疑文件',
     riskLevel: 'critical',
     readCommand: `echo '=== /tmp executables ===' && find /tmp -type f -executable 2>/dev/null | head -20 && echo '=== /dev/shm ===' && ls -la /dev/shm/ 2>/dev/null && echo '=== /var/tmp ===' && find /var/tmp -type f -executable 2>/dev/null | head -10; echo 'scan done'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '清理可疑文件并检查关联进程: rm -f <file> && kill <pid>'`,
     backupCommand: 'true',
     complianceRef: '应急响应必查',
@@ -2049,7 +2050,7 @@ const webshellScanItems: BaselineConfigItem[] = [
     recommendedValue: '无可疑连接',
     riskLevel: 'critical',
     readCommand: `(ss -tnp 2>/dev/null || netstat -tnp 2>/dev/null) | grep -E 'ESTABLISHED' | awk '{print $5, $6}' | grep -vE '(127\\.0\\.0\\.1|::1|:22\\b|:80\\b|:443\\b|:53\\b)' | head -20 || echo '(无可疑连接)'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '终止可疑连接: kill <pid>; 并封禁对端 IP: iptables -A INPUT -s <IP> -j DROP'`,
     backupCommand: 'true',
     complianceRef: '应急响应必查',
@@ -2226,8 +2227,8 @@ const systemInfoQueryItems: BaselineConfigItem[] = [
     defaultValue: '',
     recommendedValue: '',
     riskLevel: 'low',
-    readCommand: `last reboot | head -5`,
-    parseRegex: '(.+)',
+    readCommand: `(last reboot 2>/dev/null | head -5; true) | { grep . || who -b 2>/dev/null || echo "上次启动时间: $(uptime -s 2>/dev/null || echo '未知')"; }`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '重启记录不可修改'`,
     backupCommand: 'true',
   },
@@ -2266,7 +2267,7 @@ const userDeepInspectItems: BaselineConfigItem[] = [
     recommendedValue: '仅必要用户',
     riskLevel: 'medium',
     readCommand: `awk -F: '{printf "%s (UID=%s Shell=%s)\\n",$1,$3,$7}' /etc/passwd | sort -t= -k2 -n`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '请使用 userdel 删除不需要的用户'`,
     backupCommand: backup('/etc/passwd'),
     complianceRef: '应急响应 - 账户排查',
@@ -2281,7 +2282,7 @@ const userDeepInspectItems: BaselineConfigItem[] = [
     recommendedValue: '仅 root',
     riskLevel: 'critical',
     readCommand: `awk -F: '$3==0{print $1}' /etc/passwd`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '修改 UID: usermod -u <new_uid> <username>; 删除后门用户: userdel -r <username>'`,
     backupCommand: backup('/etc/passwd'),
     complianceRef: '等保2.0 / 应急响应必查',
@@ -2296,7 +2297,7 @@ const userDeepInspectItems: BaselineConfigItem[] = [
     recommendedValue: '仅管理员',
     riskLevel: 'high',
     readCommand: `awk -F: '$7 ~ /(bash|sh|zsh|fish|csh|ksh)$/ {printf "%s (UID=%s)\\n",$1,$3}' /etc/passwd`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '禁止用户登录: usermod -s /sbin/nologin <username>'`,
     backupCommand: backup('/etc/passwd'),
     complianceRef: '权限分离 / 最小权限',
@@ -2310,8 +2311,8 @@ const userDeepInspectItems: BaselineConfigItem[] = [
     defaultValue: '',
     recommendedValue: '无空密码账户',
     riskLevel: 'critical',
-    readCommand: `awk -F: '($2=="" || $2=="!"){print $1" ("$2")"}' /etc/shadow 2>/dev/null || echo '无权限读取shadow'`,
-    parseRegex: '(.+)',
+    readCommand: `awk -F: '($2==""){print $1}' /etc/shadow 2>/dev/null || echo '无权限读取shadow'`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '锁定空密码账户: passwd -l <username>; 或设置密码: passwd <username>'`,
     backupCommand: backup('/etc/shadow'),
     complianceRef: '等保2.0 身份鉴别',
@@ -2326,7 +2327,7 @@ const userDeepInspectItems: BaselineConfigItem[] = [
     recommendedValue: '仅授权管理员',
     riskLevel: 'high',
     readCommand: `echo '=== sudo组 ===' && getent group sudo 2>/dev/null && echo '=== wheel组 ===' && getent group wheel 2>/dev/null && echo '=== NOPASSWD ===' && grep -r 'NOPASSWD' /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -v '^#' || echo 'none'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '从sudo组移除用户: gpasswd -d <username> sudo; 编辑sudoers: visudo'`,
     backupCommand: 'true',
     complianceRef: '等保2.0 访问控制 / 权限分离',
@@ -2341,7 +2342,7 @@ const userDeepInspectItems: BaselineConfigItem[] = [
     recommendedValue: '无异常新增',
     riskLevel: 'high',
     readCommand: `echo '=== passwd文件修改时间 ===' && stat -c '%y' /etc/passwd && echo '=== UID>=1000的用户 ===' && awk -F: '$3>=1000 && $3<65534{printf "%s (UID=%s Created:%s)\\n",$1,$3,$7}' /etc/passwd && echo '=== 最近修改的用户相关文件 ===' && find /home -maxdepth 1 -type d -mtime -7 2>/dev/null | tail -10`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '删除可疑用户: userdel -r <username>'`,
     backupCommand: 'true',
     complianceRef: '应急响应 - 账户排查',
@@ -2356,7 +2357,7 @@ const userDeepInspectItems: BaselineConfigItem[] = [
     recommendedValue: '按策略设置',
     riskLevel: 'medium',
     readCommand: `echo '=== 所有用户密码策略 ===' && for u in $(awk -F: '$3>=0 && $3<65534 && $7 !~ /nologin|false/{print $1}' /etc/passwd); do echo "--- $u ---" && chage -l $u 2>/dev/null | head -6; done`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '修改用户密码过期: chage -M <最大天数> -m <最小天数> -W <警告天数> <username>'`,
     backupCommand: backup('/etc/shadow'),
     complianceRef: '等保2.0 身份鉴别',
@@ -2370,8 +2371,8 @@ const userDeepInspectItems: BaselineConfigItem[] = [
     defaultValue: '',
     recommendedValue: '仅授权登录',
     riskLevel: 'medium',
-    readCommand: `lastlog 2>/dev/null | grep -v 'Never' | head -30 || last -20`,
-    parseRegex: '(.+)',
+    readCommand: `last -n 30 2>/dev/null | grep -vE 'wtmp.*begins' || lastlog 2>/dev/null | grep -vE 'Never|从未登录' || grep -iE 'Accepted password|Accepted publickey' /var/log/auth.log /var/log/secure 2>/dev/null | tail -n 30`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '查看详细登录历史: last <username>; 查看失败登录: lastb <username>'`,
     backupCommand: 'true',
     complianceRef: '应急响应 - 登录排查',
@@ -2391,7 +2392,7 @@ const logDeepQueryItems: BaselineConfigItem[] = [
     recommendedValue: '无异常',
     riskLevel: 'high',
     readCommand: `(grep -i 'sudo.*authentication failure\\|sudo.*incorrect password\\|sudo.*NOT' /var/log/auth.log /var/log/secure 2>/dev/null || journalctl -u sudo --no-pager 2>/dev/null | grep -i 'fail\\|incorrect\\|NOT') | tail -30 || echo '(无sudo失败记录)'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '日志记录不可修改（只读查询）'`,
     backupCommand: 'true',
     complianceRef: '应急响应 - sudo提权排查',
@@ -2411,7 +2412,7 @@ const logDeepQueryItems: BaselineConfigItem[] = [
     recommendedValue: '无异常',
     riskLevel: 'high',
     readCommand: `(grep -i 'Failed password\\|Invalid user\\|authentication failure.*sshd' /var/log/auth.log /var/log/secure 2>/dev/null) | tail -30 || echo '(无SSH失败记录)'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '日志记录不可修改（只读查询）'`,
     backupCommand: 'true',
     complianceRef: '应急响应 - 暴力破解排查',
@@ -2424,19 +2425,19 @@ const logDeepQueryItems: BaselineConfigItem[] = [
   {
     id: 'log-ssh-success',
     name: 'SSH 登录成功日志',
-    description: '查看成功的 SSH 登录记录。确认是否有未授权的成功登录。',
+    description: '查看成功的 SSH 登录记录。确认是否有未授权的成功登录（可从 /var/log/auth.log、/var/log/secure 或 last/lastlog 获取）。',
     filePath: '/var/log/auth.log',
     type: 'string',
     defaultValue: '',
     recommendedValue: '仅授权登录',
     riskLevel: 'medium',
-    readCommand: `(grep -i 'Accepted password\\|Accepted publickey' /var/log/auth.log /var/log/secure 2>/dev/null) | tail -20 || echo '(无记录)'`,
-    parseRegex: '(.+)',
+    readCommand: `last -n 30 2>/dev/null | grep -vE 'wtmp.*begins' || grep -iE 'Accepted password|Accepted publickey' /var/log/auth.log /var/log/secure 2>/dev/null | tail -n 30 || journalctl -u sshd --no-pager -n 30 2>/dev/null | grep -i 'Accepted'`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '日志记录不可修改（只读查询）'`,
     backupCommand: 'true',
     distroOverrides: {
       redhat: {
-        readCommand: `grep -i 'Accepted password\\|Accepted publickey' /var/log/secure 2>/dev/null | tail -20 || echo '(无记录)'`,
+        readCommand: `last -n 30 2>/dev/null | grep -vE 'wtmp.*begins' || grep -iE 'Accepted password|Accepted publickey' /var/log/secure /var/log/auth.log 2>/dev/null | tail -n 30 || journalctl -u sshd --no-pager -n 30 2>/dev/null | grep -i 'Accepted'`,
       },
     },
   },
@@ -2450,7 +2451,7 @@ const logDeepQueryItems: BaselineConfigItem[] = [
     recommendedValue: '',
     riskLevel: 'medium',
     readCommand: `(grep -i ' su[: []\\|su-l\\|session opened for user' /var/log/auth.log /var/log/secure 2>/dev/null) | tail -20 || echo '(无su记录)'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '日志记录不可修改（只读查询）'`,
     backupCommand: 'true',
     distroOverrides: {
@@ -2469,7 +2470,7 @@ const logDeepQueryItems: BaselineConfigItem[] = [
     recommendedValue: '',
     riskLevel: 'medium',
     readCommand: `(cat /var/log/cron 2>/dev/null || grep -i 'CRON\\|crontab' /var/log/syslog 2>/dev/null) | tail -30 || echo '(无cron日志)'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '日志记录不可修改（只读查询）'`,
     backupCommand: 'true',
     distroOverrides: {
@@ -2488,7 +2489,7 @@ const logDeepQueryItems: BaselineConfigItem[] = [
     recommendedValue: '',
     riskLevel: 'medium',
     readCommand: `dmesg -l err,warn 2>/dev/null | tail -20 || journalctl -k -p err --no-pager 2>/dev/null | tail -20 || echo '(无法读取内核日志)'`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '内核日志不可修改'`,
     backupCommand: 'true',
   },
@@ -2504,10 +2505,10 @@ const portInspectItems: BaselineConfigItem[] = [
     filePath: '(网络)',
     type: 'string',
     defaultValue: '',
-    recommendedValue: '仅必要端口',
+    recommendedValue: '',
     riskLevel: 'high',
-    readCommand: `(ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) && echo '=== UDP ===' && (ss -ulnp 2>/dev/null || netstat -ulnp 2>/dev/null)`,
-    parseRegex: '(.+)',
+    readCommand: `echo '=== TCP LISTEN ===' && (ss -tlnp 2>/dev/null | awk 'NR>1 && $4!=""{printf "%-8s %-24s %s\\n", $1, $4, $6}' || netstat -tlnp 2>/dev/null | awk '/LISTEN/{printf "%-8s %-24s %s\\n", $1, $4, $7}') && echo '=== UDP ===' && (ss -ulnp 2>/dev/null | awk 'NR>1 && $4!=""{printf "%-8s %-24s %s\\n", $1, $4, $6}' || netstat -ulnp 2>/dev/null | awk '/udp/{printf "%-8s %-24s %s\\n", $1, $4, $7}')`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '关闭端口: kill 进程 或 systemctl stop 服务'`,
     backupCommand: 'true',
     complianceRef: '应急响应 - 端口排查',
@@ -2519,10 +2520,10 @@ const portInspectItems: BaselineConfigItem[] = [
     filePath: '(网络)',
     type: 'string',
     defaultValue: '',
-    recommendedValue: '无可疑端口',
+    recommendedValue: '',
     riskLevel: 'critical',
-    readCommand: `echo '=== 恶意端口扫描 ===' && (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -E ':1234\\b|:2333\\b|:3333\\b|:4444\\b|:4445\\b|:5555\\b|:6666\\b|:6667\\b|:7777\\b|:8888\\b|:9999\\b|:1080\\b|:3128\\b|:4443\\b|:5900\\b|:31337\\b|:12345\\b|:23456\\b|:33891\\b|:65535\\b|:19999\\b|:14444\\b|:14433\\b|:10808\\b|:7890\\b|:1088\\b|:8080\\b|:8443\\b|:9090\\b|:2222\\b|:55553\\b' || echo '(未发现已知恶意端口)' && echo '=== 非标准高端口(>10000)进程 ===' && (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | awk -F: '/LISTEN/{split($NF,a," ");if(a[1]>10000)print}' | head -20`,
-    parseRegex: '(.+)',
+    readCommand: `echo '=== 恶意端口扫描 ===' && (ss -tlnp 2>/dev/null | grep -v '^State' || netstat -tlnp 2>/dev/null | grep -v '^Proto') | grep -E ':1234\\b|:2333\\b|:3333\\b|:4444\\b|:4445\\b|:5555\\b|:6666\\b|:6667\\b|:7777\\b|:8888\\b|:9999\\b|:1080\\b|:3128\\b|:4443\\b|:5900\\b|:31337\\b|:12345\\b|:23456\\b|:33891\\b|:65535\\b|:19999\\b|:14444\\b|:14433\\b|:10808\\b|:7890\\b|:1088\\b|:8080\\b|:8443\\b|:9090\\b|:2222\\b|:55553\\b' || echo '(未发现已知恶意端口)' && echo '=== 非标准高端口(>10000)进程 ===' && (ss -tlnp 2>/dev/null | grep -v '^State' || netstat -tlnp 2>/dev/null | grep -v '^Proto') | awk -F: '/LISTEN/{split($NF,a," ");if(a[1]>10000)print}' | head -20`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '关闭恶意端口: 1.找到PID: ss -tlnp | grep :PORT  2.杀进程: kill -9 PID  3.封端口: iptables -A INPUT -p tcp --dport PORT -j DROP'`,
     backupCommand: 'true',
     complianceRef: '应急响应 - 恶意端口',
@@ -2534,10 +2535,10 @@ const portInspectItems: BaselineConfigItem[] = [
     filePath: '(网络)',
     type: 'string',
     defaultValue: '',
-    recommendedValue: '仅合法连接',
+    recommendedValue: '',
     riskLevel: 'high',
-    readCommand: `(ss -tnp state established 2>/dev/null || netstat -tnp 2>/dev/null | grep ESTABLISHED) | head -40`,
-    parseRegex: '(.+)',
+    readCommand: `(ss -tnp state established 2>/dev/null || netstat -tnp 2>/dev/null | grep ESTABLISHED) | awk '{ local_addr=""; peer_addr=""; proc_info=""; for(i=1;i<=NF;i++){ if($i ~ /[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+/ || $i ~ /\\[[0-9a-fA-F:]+\\]:[0-9]+/) { if(local_addr=="") local_addr=$i; else peer_addr=$i; } else if($i ~ /users:|\\/|pid=/) { proc_info=$i; } } if(peer_addr!="" && peer_addr !~ /127\\.0\\.0\\.1|::1/) { printf "%-22s -> %-22s %s\\n", local_addr, peer_addr, proc_info; } }' | head -40 || echo '(未检测到已建立的外部连接)'`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '断开连接: kill 对应进程; 封禁IP: iptables -A INPUT -s <IP> -j DROP'`,
     backupCommand: 'true',
     complianceRef: '应急响应 - C2通信排查',
@@ -2551,8 +2552,8 @@ const portInspectItems: BaselineConfigItem[] = [
     defaultValue: '',
     recommendedValue: '',
     riskLevel: 'medium',
-    readCommand: `(ss -tn state established 2>/dev/null || netstat -tn 2>/dev/null | grep ESTABLISHED) | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn | head -20 || echo '(无连接)'`,
-    parseRegex: '(.+)',
+    readCommand: `(ss -tn state established 2>/dev/null || netstat -tn 2>/dev/null | grep ESTABLISHED) | awk '{ last_addr=""; for(i=1;i<=NF;i++){ if($i ~ /[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+/ || $i ~ /\\[[0-9a-fA-F:]+\\]:[0-9]+/) { last_addr=$i; } } if(last_addr!="") { split(last_addr, a, ":"); ip=a[1]; gsub(/^\\[|\\]$/, "", ip); if(ip!="127.0.0.1" && ip!="0.0.0.0" && ip!="::1" && ip!="") { counts[ip]++; } } } END { for(ip in counts) { printf "%-22s  累计连接数: %d\\n", ip, counts[ip]; } }' | sort -k3 -nr | head -20 || echo '(未检测到外部连接)'`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '封禁高频IP: iptables -A INPUT -s <IP> -j DROP'`,
     backupCommand: 'true',
   },
@@ -2565,8 +2566,8 @@ const portInspectItems: BaselineConfigItem[] = [
     defaultValue: '',
     recommendedValue: '',
     riskLevel: 'medium',
-    readCommand: `(ss -tlnp 2>/dev/null | awk 'NR>1{split($4,a,":");port=a[length(a)];match($0,/users:\\(\\("([^"]+)",pid=([0-9]+)/,m);printf "%-8s %-20s PID=%-8s\\n",port,m[1],m[2]}') || (netstat -tlnp 2>/dev/null | awk '/LISTEN/{split($4,a,":");print a[length(a)],$7}') || echo '(无法获取)' | sort -n | head -40`,
-    parseRegex: '(.+)',
+    readCommand: `(ss -tlnp 2>/dev/null | awk 'NR>1{split($4,a,":");port=a[length(a)];match($0,/users:\\(\\("([^"]+)",pid=([0-9]+)/,m);if(port!=""&&m[1]!="")printf "Port %-6s -> 进程: %-18s PID=%-8s\\n",port,m[1],m[2]}') || (netstat -tlnp 2>/dev/null | awk '/LISTEN/{split($4,a,":");print "Port "$4" -> "$7}') || echo '(无法获取)' | sort -n -k2 | head -40`,
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '杀进程: kill -9 <PID>'`,
     backupCommand: 'true',
     complianceRef: '应急响应 - 端口溯源',
@@ -2581,7 +2582,7 @@ const portInspectItems: BaselineConfigItem[] = [
     recommendedValue: '',
     riskLevel: 'low',
     readCommand: `ip route show 2>/dev/null || route -n 2>/dev/null || netstat -rn 2>/dev/null`,
-    parseRegex: '(.+)',
+    parseRegex: '([\\s\\S]+)',
     writeCommand: () => `echo '删除异常路由: ip route del <route>'`,
     backupCommand: 'true',
   },
@@ -2665,6 +2666,7 @@ export const baselineCategories: BaselineCategory[] = [
     title: '应急响应速查',
     icon: 'Fire',
     hint: '后门 / Rootkit / 异常进程 / 定时任务',
+    isReadOnly: true,
     items: emergencyResponseItems,
   },
   {
@@ -2686,6 +2688,7 @@ export const baselineCategories: BaselineCategory[] = [
     title: 'Webshell 排查',
     icon: 'Analysis',
     hint: 'PHP/JSP Webshell / 反弹Shell / 临时文件',
+    isReadOnly: true,
     items: webshellScanItems,
   },
   {
@@ -2700,6 +2703,7 @@ export const baselineCategories: BaselineCategory[] = [
     title: '系统信息速查',
     icon: 'Cpu',
     hint: '内核 / SSH版本 / 主机名 / 运行时间',
+    isReadOnly: true,
     items: systemInfoQueryItems,
   },
   {
@@ -2707,6 +2711,7 @@ export const baselineCategories: BaselineCategory[] = [
     title: '用户账户排查',
     icon: 'User',
     hint: 'UID=0 / 空密码 / 密码策略 / 权限分离',
+    isReadOnly: true,
     items: userDeepInspectItems,
   },
   {
@@ -2714,6 +2719,7 @@ export const baselineCategories: BaselineCategory[] = [
     title: '日志深度查询',
     icon: 'Log',
     hint: 'sudo失败 / SSH爆破 / su记录 / cron',
+    isReadOnly: true,
     items: logDeepQueryItems,
   },
   {
@@ -2721,6 +2727,7 @@ export const baselineCategories: BaselineCategory[] = [
     title: '网络端口排查',
     icon: 'NetworkTree',
     hint: '恶意端口 / 外连IP / 进程映射',
+    isReadOnly: true,
     items: portInspectItems,
   },
 ];
@@ -2748,3 +2755,65 @@ baselineCategories.push(...databaseBaselineCategories);
 // ─── Web服务器基线配置（自动合并） ───
 import { webserverBaselineCategories } from './webserverBaselineConfigs';
 baselineCategories.push(...webserverBaselineCategories);
+
+/**
+ * 统一解析基线配置命令的输出结果，防范注释行误匹配与 fallback 字符串污染 (如 '#PermitRootLogin not set' 误提取为 'not')
+ */
+export function parseBaselineValue(parseRegex: string, output: string, isReadOnly: boolean = false): string {
+  if (!output || typeof output !== 'string') {
+    return isReadOnly ? '(未找到匹配记录/无异常)' : 'not set';
+  }
+
+  const trimmed = output.trim();
+  if (/Failed to open channel|ConnectFailed|SSH channel error|未连接到服务器/i.test(trimmed)) {
+    return '(读取失败: SSH通道打开异常)';
+  }
+
+  if (isReadOnly && (/: not found|command not found|没有那个文件或目录/i.test(trimmed))) {
+    return '(工具或记录不可用/无异常)';
+  }
+
+  // 自动清洗可能夹带的网络/系统命令表格头部干扰行（如 ss/netstat 的 State Recv-Q Send-Q ...）
+  let cleanOutput = trimmed;
+  if (cleanOutput.includes('Recv-Q') && cleanOutput.includes('Send-Q')) {
+    cleanOutput = cleanOutput.split('\n').filter(line => !/^\s*(State|Proto)\s+Recv-Q\s+Send-Q/i.test(line)).join('\n').trim();
+  }
+
+  const lines = cleanOutput.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // 对于只读排查项 (isReadOnly = true)，如果输出剥离标题头 (=== ... ===) 和结尾标识 (scan done 等) 后无实际命中内容，直接定性为无异常
+  if (isReadOnly) {
+    const realContentLines = lines.filter(l => !/^===\s*.*\s*===$/.test(l) && l !== 'scan done' && l !== 'scan complete' && l !== 'keys' && l !== '---');
+    if (realContentLines.length === 0) {
+      return '(未找到匹配记录/无异常)';
+    }
+  }
+
+  // 1. 优先在非注释行中查找匹配
+  const regex = new RegExp(parseRegex, 'i');
+  for (const line of lines) {
+    if (line.startsWith('#')) continue; // 忽略注释行
+    const match = line.match(regex);
+    if (match && match[1] !== undefined) {
+      const val = match[1].trim();
+      if (val && val !== 'not') {
+        return val;
+      }
+    }
+  }
+
+  // 2. 若全为注释行或未在非注释行匹配成功，检查是否为 not set / 未配置 fallback
+  for (const line of lines) {
+    const match = line.match(regex);
+    if (match && match[1] !== undefined) {
+      const val = match[1].trim();
+      // 防范 '#PermitRootLogin not set' 误捕获 'not'
+      if (val === 'not' || line.includes('not set')) {
+        return isReadOnly ? '(未找到匹配记录/无异常)' : 'not set';
+      }
+      return val;
+    }
+  }
+
+  return isReadOnly ? '(未找到匹配记录/无异常)' : 'not set';
+}

@@ -77,6 +77,7 @@ export class EmergencyRenderer {
           </div>
           <button class="em-toolbar-btn" onclick="window.commandHistoryModal?.show()">${History({ theme: 'outline', size: '14', fill: 'currentColor' })}<span>执行历史</span></button>
           <button class="em-toolbar-btn" onclick="window.emergencyShowFavorites && window.emergencyShowFavorites()"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 5.5 6 .5-4.5 4 1.4 6L12 16l-5.4 3 1.4-6L3.5 9l6-.5z"/></svg><span>我的收藏</span></button>
+          <button class="em-toolbar-btn" onclick="window.emergencyShowInvestigation && window.emergencyShowInvestigation()"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><span>调查清单</span><span class="em-invest-toolbar-badge" id="em-invest-badge" style="display:none">0</span></button>
           <div class="em-busybox-toggle" id="em-busybox-toggle">
             <button class="em-busybox-pill" id="em-busybox-btn" onclick="window.__busyboxToggle?.()">
               <span id="em-busybox-indicator" class="em-busybox-dot off"></span>

@@ -50,6 +50,8 @@ export class SSHConfigManager {
   private connections: SSHConnection[] = [];
   private activeConnection?: SSHConnection;
   private loadPromise: Promise<void> | null = null;
+  // 加载是否失败：加载失败时禁止保存，避免用空列表覆盖磁盘上已保存的凭据
+  private loadFailed = false;
 
   constructor() {
     this.loadPromise = this.loadConnections();
@@ -70,6 +72,7 @@ export class SSHConfigManager {
   async loadConnections(): Promise<void> {
     try {
       const backendConnections = await invoke('load_ssh_connections') as any[];
+      this.loadFailed = false;
       // 转换后端字段名为前端字段名
       this.connections = backendConnections.map(conn => ({
         id: conn.id,
@@ -103,6 +106,9 @@ export class SSHConfigManager {
       console.log('✅ SSH连接配置已加载', this.connections.length, '个连接');
     } catch (error) {
       console.error('❌ 加载SSH连接配置失败:', error);
+      // 标记加载失败：此时内存中的空列表并不代表真实数据，
+      // 禁止后续保存覆盖磁盘上可能存在的已保存凭据
+      this.loadFailed = true;
       this.connections = [];
     }
   }
@@ -111,6 +117,11 @@ export class SSHConfigManager {
    * 保存SSH连接配置
    */
   async saveConnections(): Promise<void> {
+    // 加载失败时拒绝保存：内存中的空/不完整列表可能会覆盖磁盘上已保存的凭据
+    if (this.loadFailed) {
+      console.warn('⚠️ 上次加载SSH配置失败，已跳过保存以避免覆盖磁盘上的已保存凭据');
+      return;
+    }
     try {
       // 转换字段名以匹配后端结构
       const backendConnections = this.connections.map((conn) => ({

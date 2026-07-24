@@ -5,6 +5,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { FixActionDef } from './detectionFixMapper';
 import { fixHistoryManager, type FixHistoryEntry } from './fixHistoryManager';
+import { parseBaselineValue } from '../baseline/baselineConfigs';
 
 export type FixStatus = 'pending' | 'executing' | 'success' | 'failed' | 'rolled-back';
 
@@ -63,8 +64,7 @@ class FixExecutor {
       if (action.def.type === 'baseline' && resolvedBaseline) {
         // 1. 读取当前值
         const readOut = await this.exec(resolvedBaseline.readCommand);
-        const match = new RegExp(resolvedBaseline.parseRegex).exec(readOut);
-        beforeValue = match?.[1]?.trim() || readOut.trim();
+        beforeValue = parseBaselineValue(resolvedBaseline.parseRegex, readOut);
         action.currentValue = beforeValue;
 
         // 2. 备份
@@ -81,8 +81,7 @@ class FixExecutor {
 
         // 5. 读回验证
         const verifyOut = await this.exec(resolvedBaseline.readCommand);
-        const verifyMatch = new RegExp(resolvedBaseline.parseRegex).exec(verifyOut);
-        afterValue = verifyMatch?.[1]?.trim() || verifyOut.trim();
+        afterValue = parseBaselineValue(resolvedBaseline.parseRegex, verifyOut);
         action.afterValue = afterValue;
 
       } else if (action.def.type === 'command' && action.def.command) {

@@ -42,6 +42,8 @@ aes-gcm = "0.10"
 base64 = "0.21"
 rand = "0.8"
 encoding_rs = "0.8"
+# 将 AES 密钥存入操作系统凭据库 (Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service)
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # Windows API 依赖
 [target.'cfg(windows)'.dependencies]

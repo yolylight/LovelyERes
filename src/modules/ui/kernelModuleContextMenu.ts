@@ -159,8 +159,8 @@ export class KernelModuleContextMenu extends BaseContextMenu {
         actionName: '检查模块签名'
       },
       'check-taint': {
-        command: `cat /proc/sys/kernel/tainted && echo '---说明: 0=无污染, 非0=有污染' && echo '---taint flags:' && cat /proc/sys/kernel/tainted`,
-        title: '内核污染标志',
+        command: `mod="${name}"; echo "=== 模块 [$mod] 污染标志 ==="; if [ -f "/sys/module/$mod/taint" ]; then t=$(cat "/sys/module/$mod/taint" 2>/dev/null); if [ -n "$t" ]; then echo "模块污染标志: $t"; else echo "模块污染标志: 无 (Clean)"; fi; else echo "模块污染标志: 无 (Clean)"; fi; echo ""; echo "=== 系统内核全局污染状态 ==="; val=$(cat /proc/sys/kernel/tainted 2>/dev/null || echo 0); echo "全局污染掩码值: $val"; if [ "$val" -eq 0 ] 2>/dev/null; then echo "全局内核状态: 干净 (0 - 无污染)"; else echo "全局内核状态: 已污染 ($val)"; echo "包含的污染位分析:"; [ $((val & 1)) -ne 0 ] && echo "  - Bit 0 (1): 加载了专有模块 (Proprietary/Out-of-tree)"; [ $((val & 2)) -ne 0 ] && echo "  - Bit 1 (2): 强制加载模块 (Forced load)"; [ $((val & 4)) -ne 0 ] && echo "  - Bit 2 (4): SMP CPU 不匹配"; [ $((val & 8)) -ne 0 ] && echo "  - Bit 3 (8): 强制卸载模块 (Forced unload)"; [ $((val & 16)) -ne 0 ] && echo "  - Bit 4 (16): 硬件 MCE 异常"; [ $((val & 32)) -ne 0 ] && echo "  - Bit 5 (32): Bad page 引用"; [ $((val & 64)) -ne 0 ] && echo "  - Bit 6 (64): 用户显式请求污染"; [ $((val & 128)) -ne 0 ] && echo "  - Bit 7 (128): 内核曾发生 Die/Panic"; [ $((val & 256)) -ne 0 ] && echo "  - Bit 8 (256): ACPI 表被覆盖"; [ $((val & 512)) -ne 0 ] && echo "  - Bit 9 (512): 加载了未经数字签名的模块 (Unsigned module loaded)"; [ $((val & 1024)) -ne 0 ] && echo "  - Bit 10 (1024): 发生过 Soft lockup"; [ $((val & 2048)) -ne 0 ] && echo "  - Bit 11 (2048): 内核进行了 Livepatch 热补丁"; [ $((val & 4096)) -ne 0 ] && echo "  - Bit 12 (4096): 辅助污染标志 (Auxiliary taint)"; [ $((val & 8192)) -ne 0 ] && echo "  - Bit 13 (8192): 安全策略结构被屏蔽 (Security ops blinded)"; true; fi`,
+        title: `内核污染标志 - ${name}`,
         actionName: '检查内核污染'
       },
       'check-hash': {

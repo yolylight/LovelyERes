@@ -130,7 +130,7 @@ export class SSHSessionManager {
         username,
         connected: true,
         useSudo,
-        sessionId: sessionId || `${username}@${host}:${portNumber}`,
+        sessionId: sessionId || `${username}@${host}:${portNumber}#${crypto.randomUUID()}`,
         lastActivity: new Date()
       };
 
@@ -165,7 +165,10 @@ export class SSHSessionManager {
       if (this.connectionStatus?.connected) {
         const sessionId = this.connectionStatus.sessionId;
 
-        await (window as any).__TAURI__.core.invoke('ssh_disconnect_direct');
+        // 多标签页：显式传入 sessionId，只断开当前会话，避免断错会话
+        await (window as any).__TAURI__.core.invoke('ssh_disconnect_direct', {
+          sessionId
+        });
 
         // 从多会话管理器中移除
         if (sessionId) {
@@ -351,7 +354,7 @@ export class SSHSessionManager {
           port: status.port,
           username: status.username,
           connected: status.connected,
-          sessionId: `${status.username}@${status.host}:${status.port}`,
+          sessionId: status.session_id,
           lastActivity: new Date(status.last_activity)
         };
         this.notifyListeners();

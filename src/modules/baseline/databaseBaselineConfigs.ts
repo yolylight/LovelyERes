@@ -31,9 +31,64 @@ function backup(file: string): string {
   return `cp -n ${file} ${file}_bak_$(date +%Y%m%d%H%M%S) 2>/dev/null; true`;
 }
 
+// ─── 数据库前置存在性检查探针 ───
+
+export function makeDbReadCmd(checkCmd: string, actualReadCmd: string, dbName: string): string {
+  return `if ${checkCmd}; then (${actualReadCmd}); else echo '(未检测到 ${dbName} 服务/未安装)'; fi`;
+}
+
+/** 1. MySQL / MariaDB 探针 */
+const mysqlCheck = `(pgrep -i 'mysqld|mariadbd' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':3306' || netstat -tlnp 2>/dev/null | grep -q ':3306' || [ -f /etc/my.cnf ] || [ -f /etc/mysql/my.cnf ])`;
+
+/** 2. PostgreSQL 探针 */
+const postgresqlCheck = `(pgrep -i 'postgres' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':5432' || netstat -tlnp 2>/dev/null | grep -q ':5432' || [ -d /etc/postgresql ] || [ -f /var/lib/pgsql/data/postgresql.conf ])`;
+
+/** 3. Redis 探针 */
+const redisCheck = `(pgrep -i 'redis-server' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':6379' || netstat -tlnp 2>/dev/null | grep -q ':6379' || [ -f /etc/redis/redis.conf ] || [ -f /etc/redis.conf ])`;
+
+/** 4. MongoDB 探针 */
+const mongodbCheck = `(pgrep -i 'mongod' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':27017' || netstat -tlnp 2>/dev/null | grep -q ':27017' || [ -f /etc/mongod.conf ] || [ -f /etc/mongodb.conf ])`;
+
+/** 5. Oracle 探针 */
+const oracleCheck = `(pgrep -i 'tnslsnr|oracle' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':1521' || netstat -tlnp 2>/dev/null | grep -q ':1521' || [ -n "$ORACLE_HOME" ] || [ -d /u01/app/oracle ])`;
+
+/** 6. SQL Server 探针 */
+const mssqlCheck = `(pgrep -i 'sqlservr' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':1433' || netstat -tlnp 2>/dev/null | grep -q ':1433' || [ -d /var/opt/mssql ])`;
+
+/** 7. 达梦 DM 探针 */
+const damengCheck = `(pgrep -i 'dmserver' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':5236' || netstat -tlnp 2>/dev/null | grep -q ':5236' || [ -f /etc/dm_svc.conf ] || [ -d /home/dmdba ])`;
+
+/** 8. 人大金仓 KingbaseES 探针 */
+const kingbaseCheck = `(pgrep -i 'kingbase' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':54321' || netstat -tlnp 2>/dev/null | grep -q ':54321' || [ -d /Home/kingbase ] || [ -d /opt/Kingbase ])`;
+
+/** 9. 南大通用 GBase 探针 */
+const gbaseCheck = `(pgrep -i 'gcrecover|gcluster|gbased' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':5258' || netstat -tlnp 2>/dev/null | grep -q ':5258' || [ -d /opt/gbase ])`;
+
+/** 10. OceanBase 探针 */
+const oceanbaseCheck = `(pgrep -i 'observer' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':2881' || netstat -tlnp 2>/dev/null | grep -q ':2881' || [ -d /home/admin/oceanbase ])`;
+
+/** 11. openGauss 探针 */
+const opengaussCheck = `(pgrep -i 'gaussdb' >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ':5432' || netstat -tlnp 2>/dev/null | grep -q ':5432' || [ -d /opt/openGauss ] || [ -f /var/lib/opengauss/data/postgresql.conf ])`;
+
 // ─── MySQL / MariaDB ───
 
 const mysqlItems: BaselineConfigItem[] = [
+  {
+    id: 'mysql-service-status',
+    name: 'MySQL / MariaDB 服务检测',
+    description: '检测目标服务器是否安装/运行 MySQL / MariaDB 数据库服务',
+    filePath: '/etc/my.cnf',
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${mysqlCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
   {
     id: 'mysql-bind-address',
     name: 'bind-address',
@@ -43,7 +98,7 @@ const mysqlItems: BaselineConfigItem[] = [
     defaultValue: '0.0.0.0',
     recommendedValue: '127.0.0.1',
     riskLevel: 'critical',
-    readCommand: `grep -E '^\\s*bind-address' /etc/mysql/mysql.conf.d/mysqld.cnf /etc/my.cnf /etc/mysql/my.cnf 2>/dev/null | head -1 || echo '#bind-address not set'`,
+    readCommand: makeDbReadCmd(mysqlCheck, `grep -E '^\\s*bind-address' /etc/mysql/mysql.conf.d/mysqld.cnf /etc/my.cnf /etc/mysql/my.cnf 2>/dev/null | head -1 || echo '#bind-address not set'`, 'MySQL / MariaDB'),
     parseRegex: 'bind-address\\s*=\\s*(\\S+)',
     writeCommand: (v) => sedOrAppendEq('/etc/mysql/mysql.conf.d/mysqld.cnf', 'bind-address', v),
     backupCommand: backup('/etc/mysql/mysql.conf.d/mysqld.cnf'),
@@ -400,6 +455,22 @@ const pgHbaRh = '/var/lib/pgsql/*/data/pg_hba.conf';
 
 const postgresqlItems: BaselineConfigItem[] = [
   {
+    id: 'pg-service-status',
+    name: 'PostgreSQL 服务检测',
+    description: '检测目标服务器是否安装/运行 PostgreSQL 数据库服务',
+    filePath: '/etc/postgresql/main/postgresql.conf',
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${postgresqlCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'pg-listen-addresses',
     name: 'listen_addresses',
     description: '监听地址，建议绑定特定 IP 而非 * 以限制访问',
@@ -408,7 +479,7 @@ const postgresqlItems: BaselineConfigItem[] = [
     defaultValue: 'localhost',
     recommendedValue: 'localhost',
     riskLevel: 'critical',
-    readCommand: `grep -E '^\\s*listen_addresses' ${pgConf} ${pgConfRh} 2>/dev/null | head -1 || echo "#listen_addresses = 'localhost'"`,
+    readCommand: makeDbReadCmd(postgresqlCheck, `grep -E '^\\s*listen_addresses' ${pgConf} ${pgConfRh} 2>/dev/null | head -1 || echo "#listen_addresses = 'localhost'"`, 'PostgreSQL'),
     parseRegex: "listen_addresses\\s*=\\s*'([^']*)'",
     writeCommand: (v) => `PG_CONF=$(find /etc/postgresql /var/lib/pgsql -name postgresql.conf 2>/dev/null | head -1); ${sedOrAppendEq('$PG_CONF', 'listen_addresses', `'${v}'`)}`,
     backupCommand: `PG_CONF=$(find /etc/postgresql /var/lib/pgsql -name postgresql.conf 2>/dev/null | head -1); cp -n $PG_CONF $PG_CONF.bak_$(date +%Y%m%d%H%M%S) 2>/dev/null; true`,
@@ -619,6 +690,22 @@ const redisConfAlt = '/etc/redis.conf';
 
 const redisItems: BaselineConfigItem[] = [
   {
+    id: 'redis-service-status',
+    name: 'Redis 服务检测',
+    description: '检测目标服务器是否安装/运行 Redis 数据库服务',
+    filePath: redisConf,
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${redisCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'redis-bind',
     name: 'bind',
     description: '绑定监听地址，建议绑定 127.0.0.1 禁止外部直连',
@@ -627,7 +714,7 @@ const redisItems: BaselineConfigItem[] = [
     defaultValue: '0.0.0.0',
     recommendedValue: '127.0.0.1',
     riskLevel: 'critical',
-    readCommand: `grep -E '^\\s*bind ' ${redisConf} ${redisConfAlt} 2>/dev/null | head -1 || echo '#bind not set'`,
+    readCommand: makeDbReadCmd(redisCheck, `grep -E '^\\s*bind ' ${redisConf} ${redisConfAlt} 2>/dev/null | head -1 || echo '#bind not set'`, 'Redis'),
     parseRegex: 'bind\\s+(\\S+)',
     writeCommand: (v) => `REDIS_CONF=$([ -f ${redisConf} ] && echo ${redisConf} || echo ${redisConfAlt}); ${sedOrAppend('$REDIS_CONF', 'bind', v)}`,
     backupCommand: `REDIS_CONF=$([ -f ${redisConf} ] && echo ${redisConf} || echo ${redisConfAlt}); cp -n $REDIS_CONF $REDIS_CONF.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null; true`,
@@ -807,6 +894,22 @@ const mongoConf = '/etc/mongod.conf';
 
 const mongodbItems: BaselineConfigItem[] = [
   {
+    id: 'mongodb-service-status',
+    name: 'MongoDB 服务检测',
+    description: '检测目标服务器是否安装/运行 MongoDB 数据库服务',
+    filePath: mongoConf,
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${mongodbCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'mongo-auth',
     name: 'security.authorization',
     description: '启用认证授权，防止未授权访问数据库',
@@ -816,7 +919,7 @@ const mongodbItems: BaselineConfigItem[] = [
     defaultValue: 'disabled',
     recommendedValue: 'enabled',
     riskLevel: 'critical',
-    readCommand: `grep -A5 '^security:' ${mongoConf} 2>/dev/null | grep authorization | awk '{print $2}' || echo 'disabled'`,
+    readCommand: makeDbReadCmd(mongodbCheck, `grep -A5 '^security:' ${mongoConf} 2>/dev/null | grep authorization | awk '{print $2}' || echo 'disabled'`, 'MongoDB'),
     parseRegex: '(enabled|disabled)',
     writeCommand: (v) => `grep -q '^security:' ${mongoConf} && sed -i '/^security:/,/^[^ ]/{s/authorization:.*/authorization: ${v}/}' ${mongoConf} || echo -e "security:\\n  authorization: ${v}" >> ${mongoConf}`,
     backupCommand: backup(mongoConf),
@@ -992,6 +1095,22 @@ const oraCmd = (sql: string) => `su - oracle -c "echo '${sql}' | sqlplus -s / as
 
 const oracleItems: BaselineConfigItem[] = [
   {
+    id: 'oracle-service-status',
+    name: 'Oracle 服务检测',
+    description: '检测目标服务器是否安装/运行 Oracle 数据库服务',
+    filePath: '$ORACLE_HOME/dbs/init.ora',
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${oracleCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'oracle-audit-trail',
     name: 'AUDIT_TRAIL',
     description: '审计跟踪模式（NONE/OS/DB/DB_EXTENDED/XML），建议启用',
@@ -1001,7 +1120,7 @@ const oracleItems: BaselineConfigItem[] = [
     defaultValue: 'NONE',
     recommendedValue: 'DB',
     riskLevel: 'critical',
-    readCommand: `${oraCmd("SHOW PARAMETER audit_trail;")} | grep -i audit_trail | awk '{print $NF}'`,
+    readCommand: makeDbReadCmd(oracleCheck, `${oraCmd("SHOW PARAMETER audit_trail;")} | grep -i audit_trail | awk '{print $NF}'`, 'Oracle'),
     parseRegex: '(NONE|OS|DB|DB_EXTENDED|XML)',
     writeCommand: (v) => `${oraCmd(`ALTER SYSTEM SET audit_trail='${v}' SCOPE=SPFILE;`)}`,
     backupCommand: 'true',
@@ -1165,6 +1284,22 @@ const sqlcmd = (sql: string) => `/opt/mssql-tools/bin/sqlcmd -S localhost -U SA 
 
 const mssqlItems: BaselineConfigItem[] = [
   {
+    id: 'mssql-service-status',
+    name: 'SQL Server 服务检测',
+    description: '检测目标服务器是否安装/运行 SQL Server 数据库服务',
+    filePath: '/var/opt/mssql/mssql.conf',
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${mssqlCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'mssql-auth-mode',
     name: '身份验证模式',
     description: '建议使用 Windows+SQL 混合认证或仅 Windows 认证',
@@ -1174,7 +1309,7 @@ const mssqlItems: BaselineConfigItem[] = [
     defaultValue: 'Mixed',
     recommendedValue: 'Mixed',
     riskLevel: 'medium',
-    readCommand: `${sqlcmd("SELECT SERVERPROPERTY('IsIntegratedSecurityOnly')")} | grep -E '^\\s*[01]' | tr -d ' ' | awk '{if($1==1)print "Windows"; else print "Mixed"}'`,
+    readCommand: makeDbReadCmd(mssqlCheck, `${sqlcmd("SELECT SERVERPROPERTY('IsIntegratedSecurityOnly')")} | grep -E '^\\s*[01]' | tr -d ' ' | awk '{if($1==1)print "Windows"; else print "Mixed"}'`, 'SQL Server'),
     parseRegex: '(Windows|Mixed|SQL)',
     writeCommand: (_v) => `echo '身份验证模式需通过 SQL Server Configuration Manager 修改'; true`,
     backupCommand: 'true',
@@ -1321,6 +1456,22 @@ const dmCmd = (sql: string) => `su - dmdba -c "echo '${sql}' | disql SYSDBA/SYSD
 
 const damengItems: BaselineConfigItem[] = [
   {
+    id: 'dameng-service-status',
+    name: '达梦 DM 服务检测',
+    description: '检测目标服务器是否安装/运行 达梦 DM 数据库服务',
+    filePath: dmIni,
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${damengCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'dm-pwd-policy',
     name: 'PWD_POLICY',
     description: '密码策略级别（0-5），建议设为 2 以上',
@@ -1330,7 +1481,7 @@ const damengItems: BaselineConfigItem[] = [
     recommendedValue: '2',
     riskLevel: 'critical',
     validation: { min: 0, max: 5 },
-    readCommand: `grep -E '^\\s*PWD_POLICY' ${dmIni} 2>/dev/null | awk -F= '{print $2}' | tr -d ' ' || echo '0'`,
+    readCommand: makeDbReadCmd(damengCheck, `grep -E '^\\s*PWD_POLICY' ${dmIni} 2>/dev/null | awk -F= '{print $2}' | tr -d ' ' || echo '0'`, '达梦 DM'),
     parseRegex: '(\\d+)',
     writeCommand: (v) => sedOrAppendEq(dmIni, 'PWD_POLICY', v),
     backupCommand: backup(dmIni),
@@ -1507,6 +1658,22 @@ const kbHba = '/opt/Kingbase/ES/V8/data/pg_hba.conf';
 
 const kingbaseItems: BaselineConfigItem[] = [
   {
+    id: 'kingbase-service-status',
+    name: 'KingbaseES 服务检测',
+    description: '检测目标服务器是否安装/运行 KingbaseES 数据库服务',
+    filePath: kbConf,
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${kingbaseCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'kb-listen-addresses',
     name: 'listen_addresses',
     description: '监听地址，建议绑定特定 IP 而非 *',
@@ -1515,7 +1682,7 @@ const kingbaseItems: BaselineConfigItem[] = [
     defaultValue: '*',
     recommendedValue: 'localhost',
     riskLevel: 'critical',
-    readCommand: `grep -E '^\\s*listen_addresses' ${kbConf} 2>/dev/null | head -1 || echo "#listen_addresses = '*'"`,
+    readCommand: makeDbReadCmd(kingbaseCheck, `grep -E '^\\s*listen_addresses' ${kbConf} 2>/dev/null | head -1 || echo "#listen_addresses = '*'"`, 'KingbaseES'),
     parseRegex: "listen_addresses\\s*=\\s*'([^']*)'",
     writeCommand: (v) => `sed -i "s/^#*\\s*listen_addresses.*/listen_addresses = '${v}'/" ${kbConf} || echo "listen_addresses = '${v}'" >> ${kbConf}`,
     backupCommand: backup(kbConf),
@@ -1659,6 +1826,22 @@ const kingbaseItems: BaselineConfigItem[] = [
 
 const gbaseItems: BaselineConfigItem[] = [
   {
+    id: 'gbase-service-status',
+    name: 'GBase 服务检测',
+    description: '检测目标服务器是否安装/运行 GBase 数据库服务',
+    filePath: '/opt/gbase/config/gbase.conf',
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${gbaseCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'gbase-auth',
     name: '认证模式',
     description: '数据库认证模式，建议启用密码认证',
@@ -1668,7 +1851,7 @@ const gbaseItems: BaselineConfigItem[] = [
     defaultValue: '已启用',
     recommendedValue: '已启用',
     riskLevel: 'critical',
-    readCommand: `gbase -u root -e "SELECT @@authentication_policy" 2>/dev/null | tail -1 || echo '已启用'`,
+    readCommand: makeDbReadCmd(gbaseCheck, `gbase -u root -e "SELECT @@authentication_policy" 2>/dev/null | tail -1 || echo '已启用'`, 'GBase'),
     parseRegex: '(已启用|未启用|\\S+)',
     writeCommand: (_v) => `echo '请通过 GBase 管理工具配置认证策略'; true`,
     backupCommand: 'true',
@@ -1765,9 +1948,25 @@ const gbaseItems: BaselineConfigItem[] = [
 
 // ─── OceanBase ───
 
-const obMysql = (sql: string) => `mysql -h127.0.0.1 -P2881 -uroot -e "${sql}" 2>/dev/null`;
+const obMysql = (sql: string) => `mysql --connect-timeout=2 -h127.0.0.1 -P2881 -uroot -e "${sql}" 2>/dev/null`;
 
 const oceanbaseItems: BaselineConfigItem[] = [
+  {
+    id: 'oceanbase-service-status',
+    name: 'OceanBase 服务检测',
+    description: '检测目标服务器是否安装/运行 OceanBase 数据库服务',
+    filePath: '/home/admin/oceanbase/etc/observer.config.bin',
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${oceanbaseCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
   {
     id: 'ob-ssl',
     name: 'ssl_client_authentication',
@@ -1778,7 +1977,7 @@ const oceanbaseItems: BaselineConfigItem[] = [
     defaultValue: 'OFF',
     recommendedValue: 'ON',
     riskLevel: 'high',
-    readCommand: `${obMysql("SHOW VARIABLES LIKE 'ssl_client_authentication'")} | grep -i ssl_client_authentication | awk '{print $2}' || echo 'OFF'`,
+    readCommand: makeDbReadCmd(oceanbaseCheck, `${obMysql("SHOW VARIABLES LIKE 'ssl_client_authentication'")} | grep -i ssl_client_authentication | awk '{print $2}' || echo 'OFF'`, 'OceanBase'),
     parseRegex: '(ON|OFF)',
     writeCommand: (v) => `${obMysql(`ALTER SYSTEM SET ssl_client_authentication='${v}'`)}`,
     backupCommand: 'true',
@@ -1873,6 +2072,22 @@ const ogHba = '/opt/openGauss/data/pg_hba.conf';
 
 const openGaussItems: BaselineConfigItem[] = [
   {
+    id: 'opengauss-service-status',
+    name: 'openGauss 服务检测',
+    description: '检测目标服务器是否安装/运行 openGauss 数据库服务',
+    filePath: ogConf,
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${opengaussCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
+  {
     id: 'og-listen-addresses',
     name: 'listen_addresses',
     description: '监听地址，建议绑定特定 IP',
@@ -1881,7 +2096,7 @@ const openGaussItems: BaselineConfigItem[] = [
     defaultValue: 'localhost',
     recommendedValue: 'localhost',
     riskLevel: 'critical',
-    readCommand: `grep -E '^\\s*listen_addresses' ${ogConf} 2>/dev/null | head -1 || echo "#listen_addresses = 'localhost'"`,
+    readCommand: makeDbReadCmd(opengaussCheck, `grep -E '^\\s*listen_addresses' ${ogConf} 2>/dev/null | head -1 || echo "#listen_addresses = 'localhost'"`, 'openGauss'),
     parseRegex: "listen_addresses\\s*=\\s*'([^']*)'",
     writeCommand: (v) => `sed -i "s/^#*\\s*listen_addresses.*/listen_addresses = '${v}'/" ${ogConf} || echo "listen_addresses = '${v}'" >> ${ogConf}`,
     backupCommand: backup(ogConf),
@@ -2018,9 +2233,31 @@ const openGaussItems: BaselineConfigItem[] = [
 
 // ─── TiDB ───
 
-const tidbMysql = (sql: string) => `mysql -h127.0.0.1 -P4000 -uroot -e "${sql}" 2>/dev/null`;
+/** 检查服务器上是否存在 TiDB 数据库服务 (需具备 tidb-server 进程、/etc/tidb/tidb.toml 配置文件或 SELECT version() 包含 TiDB) */
+const tidbCheck = `(pgrep -i tidb-server >/dev/null 2>&1 || [ -f /etc/tidb/tidb.toml ] || (mysql --connect-timeout=2 -h127.0.0.1 -P4000 -uroot -e "SELECT version()" 2>/dev/null | grep -qi 'TiDB'))`;
+
+const tidbMysql = (sql: string) => `mysql --connect-timeout=2 -h127.0.0.1 -P4000 -uroot -e "${sql}" 2>/dev/null`;
+
+const tidbRead = (sql: string, keyName: string, fallbackVal: string) =>
+  `if ${tidbCheck}; then (${tidbMysql(sql)} | grep -i '${keyName}' | awk '{print $2}' || echo '${fallbackVal}'); else echo '(未检测到 TiDB 服务/未安装)'; fi`;
 
 const tidbItems: BaselineConfigItem[] = [
+  {
+    id: 'tidb-service-status',
+    name: 'TiDB 服务检测',
+    description: '检测目标服务器是否安装/运行 TiDB 数据库服务',
+    filePath: '/etc/tidb/tidb.toml',
+    type: 'enum',
+    enumValues: ['存在', '不存在'],
+    defaultValue: '不存在',
+    recommendedValue: '',
+    riskLevel: 'medium',
+    readCommand: `if ${tidbCheck}; then echo '存在'; else echo '不存在'; fi`,
+    parseRegex: '(存在|不存在)',
+    writeCommand: () => `true`,
+    backupCommand: 'true',
+    complianceRef: '服务状态检测',
+  },
   {
     id: 'tidb-ssl',
     name: 'require_secure_transport',
@@ -2031,8 +2268,8 @@ const tidbItems: BaselineConfigItem[] = [
     defaultValue: 'OFF',
     recommendedValue: 'ON',
     riskLevel: 'high',
-    readCommand: `${tidbMysql("SHOW VARIABLES LIKE 'require_secure_transport'")} | grep -i require_secure_transport | awk '{print $2}' || echo 'OFF'`,
-    parseRegex: '(ON|OFF)',
+    readCommand: tidbRead("SHOW VARIABLES LIKE 'require_secure_transport'", "require_secure_transport", "OFF"),
+    parseRegex: '(ON|OFF|未检测到 TiDB 服务/未安装)',
     writeCommand: (v) => `${tidbMysql(`SET GLOBAL require_secure_transport=${v}`)}`,
     backupCommand: 'true',
     complianceRef: '等保2.0 通信安全',
@@ -2047,8 +2284,8 @@ const tidbItems: BaselineConfigItem[] = [
     defaultValue: 'OFF',
     recommendedValue: 'ON',
     riskLevel: 'high',
-    readCommand: `${tidbMysql("SHOW VARIABLES LIKE 'validate_password.enable'")} | grep -i validate_password | awk '{print $2}' || echo 'OFF'`,
-    parseRegex: '(ON|OFF)',
+    readCommand: tidbRead("SHOW VARIABLES LIKE 'validate_password.enable'", "validate_password.enable", "OFF"),
+    parseRegex: '(ON|OFF|未检测到 TiDB 服务/未安装)',
     writeCommand: (v) => `${tidbMysql(`SET GLOBAL validate_password.enable='${v}'`)}`,
     backupCommand: 'true',
     complianceRef: '等保2.0 身份鉴别',
@@ -2059,12 +2296,12 @@ const tidbItems: BaselineConfigItem[] = [
     description: '审计日志，记录所有 SQL 操作',
     filePath: '/etc/tidb/tidb.toml',
     type: 'enum',
-    enumValues: ['已启用', '未启用'],
-    defaultValue: '未启用',
-    recommendedValue: '已启用',
+    enumValues: ['ON', 'OFF', '已启用', '未启用'],
+    defaultValue: 'OFF',
+    recommendedValue: 'ON',
     riskLevel: 'high',
-    readCommand: `${tidbMysql("SHOW VARIABLES LIKE 'tidb_enable_telemetry'")} | grep -i tidb_enable_telemetry | awk '{print $2}'; ${tidbMysql("SELECT COUNT(*) FROM INFORMATION_SCHEMA.CLUSTER_CONFIG WHERE \\`KEY\\`='log.file.filename'")} | tail -1 | awk '{if($1>0)print "已启用"; else print "未启用"}'`,
-    parseRegex: '(已启用|未启用)',
+    readCommand: tidbRead("SHOW VARIABLES LIKE 'tidb_audit_log'", "tidb_audit_log", "OFF"),
+    parseRegex: '(ON|OFF|已启用|未启用|未检测到 TiDB 服务/未安装)',
     writeCommand: (_v) => `echo '请通过 TiDB Dashboard 或配置文件启用审计日志插件'; true`,
     backupCommand: 'true',
     complianceRef: '等保2.0 安全审计',
@@ -2079,8 +2316,8 @@ const tidbItems: BaselineConfigItem[] = [
     recommendedValue: '1000',
     riskLevel: 'medium',
     validation: { min: 0, max: 1000000 },
-    readCommand: `${tidbMysql("SHOW VARIABLES LIKE 'max_connections'")} | grep -i max_connections | awk '{print $2}' || echo '0'`,
-    parseRegex: '(\\d+)',
+    readCommand: tidbRead("SHOW VARIABLES LIKE 'max_connections'", "max_connections", "0"),
+    parseRegex: '(\\d+|未检测到 TiDB 服务/未安装)',
     writeCommand: (v) => `${tidbMysql(`SET GLOBAL max_connections=${v}`)}`,
     backupCommand: 'true',
     complianceRef: '等保2.0 资源控制',
@@ -2095,8 +2332,8 @@ const tidbItems: BaselineConfigItem[] = [
     defaultValue: 'OFF',
     recommendedValue: 'OFF',
     riskLevel: 'low',
-    readCommand: `${tidbMysql("SHOW VARIABLES LIKE 'tidb_general_log'")} | grep -i tidb_general_log | awk '{print $2}' || echo 'OFF'`,
-    parseRegex: '(ON|OFF|0|1)',
+    readCommand: tidbRead("SHOW VARIABLES LIKE 'tidb_general_log'", "tidb_general_log", "OFF"),
+    parseRegex: '(ON|OFF|0|1|未检测到 TiDB 服务/未安装)',
     writeCommand: (v) => `${tidbMysql(`SET GLOBAL tidb_general_log=${v === 'ON' ? 1 : 0}`)}`,
     backupCommand: 'true',
     complianceRef: '等保2.0 安全审计',
@@ -2111,8 +2348,8 @@ const tidbItems: BaselineConfigItem[] = [
     recommendedValue: '90',
     riskLevel: 'medium',
     validation: { min: 0, max: 3650 },
-    readCommand: `${tidbMysql("SHOW VARIABLES LIKE 'password_reuse_interval'")} | grep -i password_reuse_interval | awk '{print $2}' || echo '0'`,
-    parseRegex: '(\\d+)',
+    readCommand: tidbRead("SHOW VARIABLES LIKE 'password_reuse_interval'", "password_reuse_interval", "0"),
+    parseRegex: '(\\d+|未检测到 TiDB 服务/未安装)',
     writeCommand: (v) => `${tidbMysql(`SET GLOBAL password_reuse_interval=${v}`)}`,
     backupCommand: 'true',
     complianceRef: '等保2.0 身份鉴别',

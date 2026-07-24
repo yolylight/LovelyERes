@@ -55,6 +55,7 @@ export class DockerPageManager {
   private searchTerm = '';
   private initialized = false;
   private loading = false;
+  private errorMessage = '';
   private autoRefreshTimer: number | null = null;
   private autoRefreshEnabled = false;
   private logsModal = new DockerLogsModal();
@@ -84,10 +85,18 @@ export class DockerPageManager {
 
     try {
       this.loading = true;
+      this.errorMessage = '';
       this.updateContentArea();
 
-      // Always fetch containers
-      this.containers = await dockerManager.listContainers();
+      // Fetch containers with graceful error catch
+      this.containers = await dockerManager.listContainers().catch(err => {
+        console.warn('获取 Docker 容器列表异常:', err);
+        // 如果是未安装 Docker，抛出供全局捕获渲染未安装状态
+        if (this.isDockerNotInstalledError(String(err))) {
+          throw err;
+        }
+        return [];
+      });
       this.applyFilter();
 
       // Fetch tab-specific data
@@ -96,9 +105,13 @@ export class DockerPageManager {
       if (showNotification) {
         window.showNotification?.('Docker 数据已刷新', 'success');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('刷新 Docker 数据失败', error);
-      window.showNotification?.(`刷新失败: ${error}`, 'error');
+      const errMsg = error?.message || String(error);
+      this.errorMessage = errMsg;
+      if (!this.isDockerNotInstalledError(errMsg)) {
+        window.showNotification?.(`刷新失败: ${error}`, 'error');
+      }
     } finally {
       this.loading = false;
       this.renderFullPage();
@@ -214,6 +227,9 @@ export class DockerPageManager {
     if (!sshConnectionManager.isConnected()) {
       return this.renderDisconnectedInline();
     }
+    if (this.errorMessage) {
+      return this.renderError(this.errorMessage);
+    }
     switch (this.currentTab) {
       case 'overview': return this.renderOverviewTab();
       case 'containers': return this.renderContainersTab();
@@ -227,30 +243,34 @@ export class DockerPageManager {
   }
 
   private async fetchTabData(): Promise<void> {
-    switch (this.currentTab) {
-      case 'overview': {
-        const results = await Promise.allSettled([
-          dockerManager.getOverviewStats(),
-          dockerManager.getDiskUsage(),
-          dockerManager.getSystemInfo()
-        ]);
-        this.overviewStats = results[0].status === 'fulfilled' ? results[0].value : null;
-        this.diskUsage = results[1].status === 'fulfilled' ? results[1].value : null;
-        this.systemInfo = results[2].status === 'fulfilled' ? results[2].value : null;
-        break;
+    try {
+      switch (this.currentTab) {
+        case 'overview': {
+          const results = await Promise.allSettled([
+            dockerManager.getOverviewStats(),
+            dockerManager.getDiskUsage(),
+            dockerManager.getSystemInfo()
+          ]);
+          this.overviewStats = results[0].status === 'fulfilled' ? results[0].value : null;
+          this.diskUsage = results[1].status === 'fulfilled' ? results[1].value : null;
+          this.systemInfo = results[2].status === 'fulfilled' ? results[2].value : null;
+          break;
+        }
+        case 'images':
+          this.images = await dockerManager.listImages().catch(e => { console.warn('获取镜像列表失败', e); return []; });
+          break;
+        case 'networks':
+          this.networks = await dockerManager.listNetworks().catch(e => { console.warn('获取网络列表失败', e); return []; });
+          break;
+        case 'volumes':
+          this.volumes = await dockerManager.listVolumes().catch(e => { console.warn('获取卷列表失败', e); return []; });
+          break;
+        case 'compose':
+          this.composeProjects = await dockerManager.listComposeProjects().catch(e => { console.warn('获取 Compose 失败', e); return []; });
+          break;
       }
-      case 'images':
-        this.images = await dockerManager.listImages();
-        break;
-      case 'networks':
-        this.networks = await dockerManager.listNetworks();
-        break;
-      case 'volumes':
-        this.volumes = await dockerManager.listVolumes();
-        break;
-      case 'compose':
-        this.composeProjects = await dockerManager.listComposeProjects();
-        break;
+    } catch (e) {
+      console.warn('获取 Tab 数据失败:', e);
     }
   }
 
@@ -654,6 +674,28 @@ export class DockerPageManager {
       <div style="font-size:16px;font-weight:500;color:var(--text-primary);margin-bottom:4px;">尚未连接 SSH</div>
       <div style="font-size:13px;">请先建立 SSH 连接后，再刷新 Docker 状态。</div>
     </div>`;
+  }
+
+  private isDockerNotInstalledError(message: string): boolean {
+    return /docker.*not found|not found.*docker|command not found|没有.*docker|docker.*未安装|未安装.*docker/i.test(message);
+  }
+
+  private renderError(message: string): string {
+    if (this.isDockerNotInstalledError(message)) {
+      return `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;min-height:300px;gap:var(--spacing-md);color:var(--text-secondary);padding:40px;text-align:center;">
+          <div style="font-size:48px;margin-bottom:4px;">🐳</div>
+          <div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:4px;">目标主机未安装 Docker</div>
+          <p style="font-size:13px;max-width:400px;text-align:center;line-height:1.6;margin:0;">未检测到 Docker 命令，请先在目标主机上安装 Docker 后再使用此功能。</p>
+        </div>`;
+    }
+    return `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;min-height:300px;gap:var(--spacing-md);color:var(--text-secondary);padding:40px;text-align:center;">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--error-color)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-alert-circle"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:4px;">Docker 获取失败</div>
+        <p style="font-size:13px;max-width:400px;text-align:center;line-height:1.6;margin:0;">${message}</p>
+        <button class="modern-btn primary" data-docker-action="refresh" style="margin-top:var(--spacing-sm);">重新尝试</button>
+      </div>`;
   }
 
   // ============================================================

@@ -276,8 +276,14 @@ pub async fn detect_immutable_files(state: State<'_, AppState>) -> Result<Vec<St
 
 /// 内存马排查
 #[tauri::command]
-pub async fn detect_memshell(state: State<'_, AppState>) -> Result<detection_manager::GenericDetectionResult, String> {
+pub async fn detect_memshell(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<detection_manager::GenericDetectionResult, String> {
+    use tauri::Emitter;
     let manager = &state.ssh_manager;
-    detection_manager::detect_memshell(manager)
+    detection_manager::detect_memshell_with_progress(manager, |msg| {
+        let _ = app.emit("memshell_scan_progress", msg);
+    })
 }
 

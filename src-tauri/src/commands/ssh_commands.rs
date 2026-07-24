@@ -177,9 +177,16 @@ pub async fn ssh_test_connection(
 }
 
 #[tauri::command]
-pub async fn ssh_disconnect_direct(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn ssh_disconnect_direct(
+    session_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let manager = &state.ssh_manager;
-    manager.disconnect().map_err(|e| e.to_string())
+    // 多标签页：指定 session_id 时只断开该会话；否则回退断开当前会话
+    match session_id {
+        Some(id) if !id.is_empty() => manager.disconnect_session(&id).map_err(|e| e.to_string()),
+        _ => manager.disconnect().map_err(|e| e.to_string()),
+    }
 }
 
 /// 切换当前活动会话（多标签页支持）
@@ -634,6 +641,7 @@ pub async fn ssh_create_terminal_session(
     terminal_id: String,
     cols: u16,
     rows: u16,
+    session_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // 获取终端创建锁，确保原子性
@@ -641,11 +649,11 @@ pub async fn ssh_create_terminal_session(
 
     let manager = &state.ssh_manager;
 
-    if !manager.is_connected() {
+    if session_id.is_none() && !manager.is_connected() {
         return Err("没有活动的 SSH 连接".to_string());
     }
 
-    match manager.create_terminal_session(window, &terminal_id, cols as u32, rows as u32) {
+    match manager.create_terminal_session(window, &terminal_id, cols as u32, rows as u32, session_id) {
         Ok(_) => {
             println!("✅ 创建终端会话成功: {}", terminal_id);
             Ok(terminal_id)
@@ -709,6 +717,25 @@ pub async fn ssh_send_input(
         Ok(_) => Ok(()),
         Err(e) => {
             println!("❌ 发送终端输入失败: {}", e);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// 调整 SSH 终端尺寸（同步 PTY 窗口大小，避免远端换行错乱导致的字符缺失）
+#[tauri::command]
+pub async fn ssh_resize_terminal(
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = &state.ssh_manager;
+
+    match manager.resize_terminal(&terminal_id, cols as u32, rows as u32) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            println!("❌ 调整终端尺寸失败: {}", e);
             Err(e.to_string())
         }
     }

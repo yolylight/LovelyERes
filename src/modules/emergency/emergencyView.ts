@@ -373,3 +373,51 @@ export function renderFindingPanel(f: Finding | null): string {
       <button class="em-finding-add" onclick="window.emergencyAddFinding && window.emergencyAddFinding('${esc(f.path)}')">+ 加入调查</button>
     </div>`;
 }
+
+// ─────────────────────────── 调查清单面板 ───────────────────────────
+
+export function renderInvestigationPanel(items: string[]): string {
+  if (!items.length) {
+    return `
+    <div class="em-invest-panel">
+      <div class="em-invest-head">
+        <span class="em-invest-title">调查清单</span>
+        <span class="em-invest-count">0 项</span>
+      </div>
+      <div class="em-invest-empty">
+        <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <p>暂无调查项</p>
+        <p class="em-invest-hint">在分析结果中点击「调查」可将发现加入清单</p>
+      </div>
+    </div>`;
+  }
+
+  const rows = items.map((path, i) => {
+    const base = path.split('/').pop() || path;
+    return `
+    <div class="em-invest-item" data-em-invest-idx="${i}">
+      <div class="em-invest-item-info">
+        <span class="em-invest-item-base" title="${esc(path)}">${esc(base)}</span>
+        <span class="em-invest-item-path">${esc(path)}</span>
+      </div>
+      <div class="em-invest-item-ops">
+        <button class="em-invest-op" data-em-invest-terminal="${i}" title="打开终端查看">终端</button>
+        <button class="em-invest-op" data-em-invest-locate="${i}" title="在文件管理器中定位">定位</button>
+        <button class="em-invest-op danger" data-em-invest-remove="${i}" title="从清单移除">移除</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="em-invest-panel">
+      <div class="em-invest-head">
+        <span class="em-invest-title">调查清单</span>
+        <span class="em-invest-count">${items.length} 项</span>
+        <div class="em-invest-head-ops">
+          <button class="em-invest-head-btn" data-em-invest-export title="导出清单">导出</button>
+          <button class="em-invest-head-btn danger" data-em-invest-clear title="清空清单">清空</button>
+        </div>
+      </div>
+      <div class="em-invest-list">${rows}</div>
+    </div>`;
+}

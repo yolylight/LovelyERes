@@ -90,9 +90,17 @@ function showStartupFailure(error: unknown): void {
  * 在新窗口中打开 SSH 终端
  */
 async function openSSHTerminalWindow(): Promise<void> {
+  const sessionId = (window as any).sshConnectionManager?.getCurrentSessionId?.();
+  const safeLabel = sessionId
+    ? `ssh-terminal-${sessionId.replace(/[^a-zA-Z0-9]/g, '-')}`
+    : 'ssh-terminal';
+  const url = sessionId
+    ? `/ssh-terminal.html?sessionId=${encodeURIComponent(sessionId)}`
+    : '/ssh-terminal.html';
+
   try {
     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-    const existingWindow = await WebviewWindow.getByLabel('ssh-terminal');
+    const existingWindow = await WebviewWindow.getByLabel(safeLabel);
     if (existingWindow) {
       await existingWindow.setFocus();
       await existingWindow.unminimize();
@@ -100,8 +108,8 @@ async function openSSHTerminalWindow(): Promise<void> {
     }
 
     const isMacOS = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-    const sshWindow = new WebviewWindow('ssh-terminal', {
-      url: '/ssh-terminal.html',
+    const sshWindow = new WebviewWindow(safeLabel, {
+      url,
       title: 'SSH Terminal - LovelyRes',
       width: 1000,
       height: 700,
@@ -123,7 +131,7 @@ async function openSSHTerminalWindow(): Promise<void> {
 
     try {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-      const existingWindow = await WebviewWindow.getByLabel('ssh-terminal');
+      const existingWindow = await WebviewWindow.getByLabel(safeLabel);
       if (existingWindow) {
         await existingWindow.setFocus();
         await existingWindow.unminimize();
@@ -133,11 +141,7 @@ async function openSSHTerminalWindow(): Promise<void> {
       console.error('聚焦 SSH 终端窗口失败:', focusError);
     }
 
-    const fallbackWindow = window.open(
-      '/ssh-terminal.html',
-      'ssh-terminal',
-      'width=1000,height=700,resizable=yes,scrollbars=yes,status=yes'
-    );
+    const fallbackWindow = window.open(url, '_blank', 'width=1000,height=700,resizable=yes');
     if (!fallbackWindow) {
       window.showNotification?.('无法打开 SSH 终端窗口', 'error');
     }
@@ -201,6 +205,8 @@ async function bootstrapApp(): Promise<void> {
       { CommandHistoryModal },
       { FileContextMenu },
       { LogContextMenu },
+      { UploadModal },
+      { CreateFolderModal },
       { initSftpContextMenuHandler },
       { initServerModalManager },
       { initTableFilterManager },
@@ -225,6 +231,8 @@ async function bootstrapApp(): Promise<void> {
       import('./modules/ui/commandHistoryModal'),
       import('./modules/ui/fileContextMenu'),
       import('./modules/ui/logContextMenu'),
+      import('./modules/ui/uploadModal'),
+      import('./modules/ui/createFolderModal'),
       import('./modules/ui/sftpContextMenuHandler'),
       import('./modules/ui/serverModalManager'),
       import('./modules/ui/tableFilterManager'),
@@ -261,6 +269,8 @@ async function bootstrapApp(): Promise<void> {
     const commandHistoryModal = new CommandHistoryModal();
     const fileContextMenu = new FileContextMenu();
     const logContextMenu = new LogContextMenu();
+    const uploadModal = new UploadModal();
+    const createFolderModal = new CreateFolderModal();
 
     (window as any).fileViewerModal = fileViewerModal;
     (window as any).permissionsModal = permissionsModal;
@@ -268,6 +278,8 @@ async function bootstrapApp(): Promise<void> {
     (window as any).commandHistoryModal = commandHistoryModal;
     (window as any).fileContextMenu = fileContextMenu;
     (window as any).logContextMenu = logContextMenu;
+    (window as any).uploadModal = uploadModal;
+    (window as any).createFolderModal = createFolderModal;
 
     bindPostBootDomListeners(logContextMenu);
 
@@ -293,6 +305,8 @@ async function bootstrapApp(): Promise<void> {
     initCommandPalette();
     initKeyboardShortcuts(app);
 
+    await setupMainWindowCloseListener();
+
     console.log('LovelyRes 启动完成');
   })().catch((error) => {
     bootPromise = null;
@@ -302,6 +316,64 @@ async function bootstrapApp(): Promise<void> {
 
   return bootPromise;
 }
+
+/**
+ * 监听主窗口关闭请求，确保关闭主窗口前对应的终端窗口与 Session 已安全关闭
+ */
+async function setupMainWindowCloseListener(): Promise<void> {
+  try {
+    const { getCurrentWebviewWindow, getAllWebviewWindows } = await import('@tauri-apps/api/webviewWindow');
+    const appWindow = getCurrentWebviewWindow();
+
+    await appWindow.onCloseRequested(async (event) => {
+      // 1. 阻止默认直接关闭
+      event.preventDefault();
+      console.log('🛑 [Main] 收到主窗口关闭请求，开始安全清理关联终端窗口与 SSH 连接...');
+
+      const cleanup = async () => {
+        // 2. 遍历所有 Webview 窗口，将所有终端子窗口彻底 destroy
+        const windows = await getAllWebviewWindows();
+        for (const win of windows) {
+          if (win.label !== appWindow.label) {
+            console.log(`🔌 [Main] 正在安全关闭终端窗口: ${win.label}`);
+            await win.destroy();
+          }
+        }
+
+        // 3. 清理后端所有 SSH 终端通道
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('ssh_close_all_terminal_sessions');
+
+        // 4. 清理所有 SSH 活动会话
+        const { multiSessionManager } = await import('./modules/remote/multiSessionManager');
+        const sessions = multiSessionManager.getSessions();
+        for (const session of sessions) {
+          try {
+            await invoke('ssh_disconnect_direct', { sessionId: session.sessionId });
+          } catch (e) {
+            console.warn(`断开会话 ${session.sessionId} 提示:`, e);
+          }
+        }
+      };
+
+      // 最多等待 5 秒完成清理，超时后强制销毁，避免主窗口无法关闭
+      try {
+        await Promise.race([
+          cleanup(),
+          new Promise<void>((_, reject) => setTimeout(() => reject(new Error('cleanup timeout')), 5000)),
+        ]);
+        console.log('✅ 所有终端窗口与连接已安全关闭，正在销毁主窗口');
+      } catch (cleanError) {
+        console.warn('⚠️ 清理超时或出错，强制关闭主窗口:', cleanError);
+      } finally {
+        await appWindow.destroy();
+      }
+    });
+  } catch (error) {
+    console.warn('⚠️ 注册主窗口关闭监听器提示（可能处在非 Tauri 环境）:', error);
+  }
+}
+
 
 async function initializeApp(): Promise<void> {
   initNotificationManager();

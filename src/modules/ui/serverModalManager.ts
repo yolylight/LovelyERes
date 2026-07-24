@@ -115,6 +115,9 @@ async function connectServer(serverId: string): Promise<void> {
   const connection = sshManager.getConnection(serverId);
   if (!connection) return;
 
+  // 关闭连接管理器浮层（如果打开）
+  document.getElementById('sc-manage-overlay')?.remove();
+
   // 卡片动画
   const card = document.getElementById(`sc-card-${serverId}`);
   if (card) card.classList.add('connecting');
@@ -123,13 +126,23 @@ async function connectServer(serverId: string): Promise<void> {
   (window as any).refreshDashboard?.();
 
   try {
-    let password = '';
-    const authType = connection.authType || 'password';
+    // 解析有效凭据：优先使用顶层字段，缺失时回退到账号列表（多账号连接的密码可能仅存于 accounts 中）。
+    // 这与 testConnection / 编辑表单一致，避免“测试连接成功但点击连接认证失败”。
+    const activeAccount = connection.accounts?.find((a: any) => a.username === connection.activeAccount)
+      || connection.accounts?.find((a: any) => a.isDefault)
+      || connection.accounts?.[0];
 
-    if (authType === 'password' && connection.encryptedPassword) {
+    const authType = connection.authType || activeAccount?.authType || 'password';
+    const username = connection.username || activeAccount?.username || 'root';
+    const encryptedPassword = connection.encryptedPassword || activeAccount?.encryptedPassword;
+    const keyPath = connection.keyPath || activeAccount?.keyPath;
+    const keyPassphrase = connection.keyPassphrase || activeAccount?.keyPassphrase;
+
+    let password = '';
+    if (authType === 'password' && encryptedPassword) {
       try {
         stateManager?.setLoadingStep?.('解密凭据...');
-        password = await (window as any).__TAURI__.core.invoke('decrypt_password', { encryptedPassword: connection.encryptedPassword });
+        password = await (window as any).__TAURI__.core.invoke('decrypt_password', { encryptedPassword });
       } catch {
         window.showNotification?.('密码解密失败', 'error');
         if (card) card.classList.remove('connecting');
@@ -139,7 +152,7 @@ async function connectServer(serverId: string): Promise<void> {
 
     stateManager?.setLoadingStep?.(`正在连接 ${connection.host}:${connection.port}...`);
     // useSudo 从保存的配置读取；sudoPassword 传 undefined，由连接管理器自动解密已保存的 sudo 密码
-    await sshConnectionManager.connect(connection.host, connection.port, connection.username, password, authType, connection.keyPath, connection.keyPassphrase, connection.useSudo || false);
+    await sshConnectionManager.connect(connection.host, connection.port, username, password, authType, keyPath, keyPassphrase, connection.useSudo || false);
     recordLastConnected(serverId);
 
     stateManager?.setLoadingStep?.('连接成功，正在初始化...');
@@ -410,10 +423,11 @@ function scClearSelection(): void {
   document.querySelectorAll('.sc-hist-item.active').forEach(el => el.classList.remove('active'));
 
   // 恢复密码输入框为默认状态
-  const savedWrapper = document.getElementById('scw-password-saved-wrapper');
-  const inputWrapper = document.getElementById('scw-password-input-wrapper');
-  if (savedWrapper) savedWrapper.style.display = 'none';
-  if (inputWrapper) inputWrapper.style.display = 'block';
+  const pwdInput = document.getElementById('scw-password') as HTMLInputElement;
+  if (pwdInput) {
+    pwdInput.value = '';
+    pwdInput.placeholder = '请输入密码';
+  }
 }
 
 function scToggleSudo(checked: boolean): void {
@@ -451,17 +465,13 @@ function scSelectServer(id: string): void {
 
   // 同步密码已保存的状态
   const hasSavedPassword = conn.encryptedPassword || conn.accounts?.[0]?.encryptedPassword;
-  const savedWrapper = document.getElementById('scw-password-saved-wrapper');
-  const inputWrapper = document.getElementById('scw-password-input-wrapper');
-  if (savedWrapper && inputWrapper) {
+  const pwdInput = document.getElementById('scw-password') as HTMLInputElement;
+  if (pwdInput) {
+    pwdInput.value = '';
     if (conn.authType === 'password' && hasSavedPassword) {
-      savedWrapper.style.display = 'flex';
-      inputWrapper.style.display = 'none';
-      const pwdInput = document.getElementById('scw-password') as HTMLInputElement;
-      if (pwdInput) pwdInput.value = '';
+      pwdInput.placeholder = '••••••••';
     } else {
-      savedWrapper.style.display = 'none';
-      inputWrapper.style.display = 'block';
+      pwdInput.placeholder = '请输入密码';
     }
   }
 
@@ -519,6 +529,26 @@ async function scConnectForm(): Promise<void> {
           sudoPassword: sudoPassword || undefined,
         });
       } catch { /* 保存失败不阻断连接 */ }
+    } else if (remember && selectedId) {
+      // 已有连接，在成功后同步更新可能发生变化的属性（如新密码、用户名、端口等）
+      try {
+        const updates: any = {
+          host, port, username, authType, useSudo
+        };
+        if (authType === 'password' && password) {
+          updates.password = password;
+        }
+        if (authType === 'key') {
+          if (keyPath) updates.keyPath = keyPath;
+          if (keyPassphrase) updates.keyPassphrase = keyPassphrase;
+        }
+        if (sudoPassword) {
+          updates.sudoPassword = sudoPassword;
+        }
+        await getApp()?.sshManager?.updateConnection(selectedId, updates);
+      } catch (err) {
+        console.error('更新连接密码/配置失败:', err);
+      }
     }
 
     recordLastConnected(selectedId || `${username}@${host}:${port}`);
@@ -631,8 +661,9 @@ async function testConnection(): Promise<void> {
   const port = parseInt((document.getElementById('sc-port') as HTMLInputElement)?.value || '22');
   const username = (document.getElementById('sc-username') as HTMLInputElement)?.value?.trim() || 'root';
   const authType = (document.getElementById('sc-auth-type') as HTMLInputElement)?.value || 'password';
-  const password = (document.getElementById('sc-password') as HTMLInputElement)?.value || '';
+  let password = (document.getElementById('sc-password') as HTMLInputElement)?.value || '';
   const keyPath = (document.getElementById('sc-keypath') as HTMLInputElement)?.value || '';
+  const editingId = (document.getElementById('sc-editing-id') as HTMLInputElement)?.value || '';
 
   if (!host) { window.showNotification?.('请输入主机地址', 'warning'); return; }
 
@@ -640,6 +671,20 @@ async function testConnection(): Promise<void> {
   if (testBtn) { testBtn.disabled = true; testBtn.textContent = '测试中...'; }
 
   try {
+    // 编辑已保存连接且未输入新密码 → 解密并使用已保存的密码
+    if (authType === 'password' && !password && editingId) {
+      const conn = getApp()?.sshManager?.getConnection(editingId);
+      const encrypted = conn?.encryptedPassword || conn?.accounts?.[0]?.encryptedPassword;
+      if (encrypted) {
+        try {
+          password = await (window as any).__TAURI__.core.invoke('decrypt_password', { encryptedPassword: encrypted });
+        } catch {
+          window.showNotification?.('已保存密码解密失败，请重新输入密码', 'error');
+          return;
+        }
+      }
+    }
+
     await (window as any).__TAURI__.core.invoke('ssh_test_connection', {
       host, port, username, password: authType === 'password' ? password : '',
       authType, keyPath: authType === 'key' ? keyPath : '',

@@ -36,10 +36,22 @@ impl DockerManager {
             ));
         }
 
-        let ps_output = ensure_success(
-            run_command(ssh, "docker ps -a --format '{{json .}}'")?,
-            "获取 Docker 容器列表失败",
-        )?;
+        let mut ps_output = run_command(ssh, "docker ps -a --format '{{json .}}'")?;
+        if !is_success(&ps_output) || ps_output.output.trim().is_empty() {
+            ps_output = run_command(
+                ssh,
+                "docker ps -a --format '{\"ID\":\"{{.ID}}\",\"Names\":\"{{.Names}}\",\"Command\":{{json .Command}},\"RunningFor\":\"{{.RunningFor}}\",\"Status\":\"{{.Status}}\"}'"
+            )?;
+        }
+
+        if !is_success(&ps_output) {
+            let err_msg = ps_output.output.trim();
+            return Err(LovelyResError::DockerError(if err_msg.is_empty() {
+                "获取 Docker 容器列表失败".to_string()
+            } else {
+                err_msg.to_string()
+            }));
+        }
 
         let mut rows = Vec::new();
         for line in ps_output.output.lines() {
@@ -59,8 +71,8 @@ impl DockerManager {
             return Ok(Vec::new());
         }
 
-        let stats_map = self.fetch_stats_map(ssh)?;
-        let inspect_map = self.fetch_inspect_map(ssh, &rows)?;
+        let stats_map = self.fetch_stats_map(ssh).unwrap_or_default();
+        let inspect_map = self.fetch_inspect_map(ssh, &rows).unwrap_or_default();
 
         let mut summaries = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -69,10 +81,8 @@ impl DockerManager {
                 let summary = build_summary(row, inspect, stats);
                 summaries.push(summary);
             } else {
-                println!(
-                    "?? 未找到容器 {} 的 inspect 结果，跳过该条目",
-                    row.primary_ref()
-                );
+                let summary = build_fallback_summary(row);
+                summaries.push(summary);
             }
         }
 
@@ -402,10 +412,7 @@ impl DockerManager {
             "docker inspect --type container --format '{{{{json .}}}}' {}",
             joined
         );
-        let result = ensure_success(
-            run_command(ssh, &command)?,
-            "获取容器详情失败",
-        )?;
+        let result = run_command(ssh, &command)?;
 
         let mut map = HashMap::new();
         for line in result.output.lines() {
@@ -695,6 +702,40 @@ struct DockerInspectMount {
     rw: Option<bool>,
 }
 
+fn build_fallback_summary(row: &DockerPsRow) -> DockerContainerSummary {
+    let name = row.primary_ref();
+    let status_raw = normalize_string(row.status.as_deref()).unwrap_or_else(|| "unknown".to_string());
+    let is_running = status_raw.to_lowercase().contains("up");
+    let state = if is_running { "running".to_string() } else { "exited".to_string() };
+
+    DockerContainerSummary {
+        id: row.id.clone(),
+        short_id: short_id(&row.id),
+        name,
+        image: "".to_string(),
+        state,
+        status: status_raw,
+        created_at: "".to_string(),
+        uptime: normalize_string(row.running_for.as_deref()),
+        command: normalize_command(row.command.as_deref()),
+        ports: Vec::new(),
+        cpu_percent: None,
+        memory_usage: None,
+        memory_percent: None,
+        net_io: None,
+        block_io: None,
+        pids: None,
+        network_mode: None,
+        networks: Vec::new(),
+        mounts: Vec::new(),
+        quick_checks: DockerQuickCheck {
+            network_attached: false,
+            privileged: false,
+            health: None,
+        },
+    }
+}
+
 fn build_summary(
     row: &DockerPsRow,
     inspect: &DockerInspect,
@@ -874,7 +915,7 @@ fn ensure_success(
 }
 
 fn is_success(result: &TerminalOutput) -> bool {
-    result.exit_code.unwrap_or(0) == 0
+    result.exit_code.unwrap_or(1) == 0
 }
 
 fn normalize_string(value: Option<&str>) -> Option<String> {

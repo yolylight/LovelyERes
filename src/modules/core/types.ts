@@ -16,5 +16,5 @@ export interface AppState {
   currentServer?: string; // 保留向后兼容
   serverInfo?: ServerInfo; // 新增详细服务器信息
   loading: boolean;
-  currentPage: 'dashboard' | 'system-info' | 'ssh-terminal' | 'remote-operations' | 'docker' | 'emergency-commands' | 'log-analysis' | 'settings' | 'quick-detection' | 'kubernetes' | 'database';
+  currentPage: 'dashboard' | 'system-info' | 'ssh-terminal' | 'remote-operations' | 'docker' | 'emergency-commands' | 'log-analysis' | 'settings' | 'quick-detection' | 'kubernetes' | 'database' | 'memshell-scan';
 }

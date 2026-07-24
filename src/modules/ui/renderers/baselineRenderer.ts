@@ -33,11 +33,12 @@ import {
   Fire,
   Config,
   Analysis,
+  Copy,
 } from '@icon-park/svg';
 
 const iconMap: Record<string, (opts: any) => string> = {
   Key, Lock, Cpu, Shield, User, System, Log, NetworkTree,
-  Time, FileText, Fire, Config, Analysis,
+  Time, FileText, Fire, Config, Analysis, Copy,
 };
 
 export class BaselineRenderer {
@@ -334,14 +335,35 @@ export class BaselineRenderer {
     currentValues: Map<string, string>,
     pendingChanges: Map<string, string>,
   ): string {
+    const isCategoryReadOnly = !!category.isReadOnly;
+
     const items = category.items.map(item => {
       const currentVal = currentValues.get(item.id) ?? '...';
       const pendingVal = pendingChanges.get(item.id);
       const displayVal = pendingVal !== undefined ? pendingVal : currentVal;
-      const isModified = pendingVal !== undefined && pendingVal !== currentVal;
-      const isNonCompliant = currentVal !== '...' && currentVal !== 'unknown' && currentVal !== item.recommendedValue && item.recommendedValue !== '按需设置' && item.recommendedValue !== '按需配置' && item.recommendedValue !== '无 NOPASSWD 条目' && item.recommendedValue !== '非默认端口';
+      const isModified = !isCategoryReadOnly && pendingVal !== undefined && pendingVal !== currentVal;
+      const isUninstalled = currentVal.includes('未检测到') || currentVal.includes('未安装') || currentVal.includes('不可用') || currentVal.includes('读取失败');
+      const isNonCompliant = !isCategoryReadOnly && !isUninstalled && currentVal !== '...' && currentVal !== 'unknown' && !!item.recommendedValue && currentVal !== item.recommendedValue && !['按需设置', '按需配置', '无 NOPASSWD 条目', '非默认端口'].includes(item.recommendedValue);
       const riskColor = riskColors[item.riskLevel];
       const riskLabel = riskLabels[item.riskLevel];
+
+      // 如果为只读分类/只读项，渲染专用的只读排查面板
+      if (isCategoryReadOnly) {
+        return `
+          <div class="bl-config-item bl-config-item-inspect" data-bl-item-id="${item.id}">
+            <div class="bl-item-header">
+              <span class="bl-item-name">${this.escapeHtml(item.name)}</span>
+              <span class="bl-risk-badge" style="background: ${riskColor}15; color: ${riskColor}; border: 1px solid ${riskColor}40">${riskLabel}</span>
+              ${item.complianceRef ? `<span class="bl-compliance-ref">${this.escapeHtml(item.complianceRef)}</span>` : ''}
+              <span class="bl-readonly-tag">只读排查项</span>
+            </div>
+            <div class="bl-item-desc">${this.escapeHtml(item.description)}</div>
+            <div class="bl-item-values">
+              ${this.renderInspectResultBlock(item, currentVal)}
+            </div>
+          </div>
+        `;
+      }
 
       return `
         <div class="bl-config-item ${isModified ? 'bl-modified' : ''} ${isNonCompliant ? 'bl-noncompliant' : ''}" data-bl-item-id="${item.id}">
@@ -356,23 +378,27 @@ export class BaselineRenderer {
             <div class="bl-value-row">
               <span class="bl-value-label">当前值:</span>
               <span class="bl-value-current ${isNonCompliant ? 'bl-value-warn' : 'bl-value-ok'}" id="bl-current-${item.id}">${this.escapeHtml(currentVal)}</span>
-              <span class="bl-value-label">推荐值:</span>
-              <span class="bl-value-recommended">${this.escapeHtml(item.recommendedValue)}</span>
-              ${item.filePath !== '(动态检测)' && item.filePath !== '(systemd)' ? `<span class="bl-value-filepath" title="${this.escapeHtml(item.filePath)}">${this.escapeHtml(item.filePath)}</span>` : ''}
-            </div>
-            <div class="bl-edit-row">
-              ${this.renderEditControl(item, displayVal)}
-              ${item.recommendedValue !== '按需设置' && item.recommendedValue !== '按需配置' && item.recommendedValue !== '无 NOPASSWD 条目' && item.recommendedValue !== '非默认端口' ? `
-                <button class="bl-btn-apply-rec" data-bl-action="apply-recommended" data-bl-item-id="${item.id}" title="应用推荐值: ${this.escapeHtml(item.recommendedValue)}">
-                  ${Lightning({ theme: 'outline', size: '14', fill: 'currentColor' })} 推荐值
-                </button>
+              ${item.recommendedValue ? `
+                <span class="bl-value-label">推荐值:</span>
+                <span class="bl-value-recommended">${this.escapeHtml(item.recommendedValue)}</span>
               ` : ''}
-              ${isModified ? `
-                <button class="bl-btn-revert" data-bl-action="revert-item" data-bl-item-id="${item.id}" title="撤销修改">
-                  ${CloseOne({ theme: 'outline', size: '14', fill: 'currentColor' })} 撤销
-                </button>
-              ` : ''}
+              ${item.filePath !== '(动态检测)' && item.filePath !== '(systemd)' && item.filePath !== '(网络)' && item.filePath !== '(全盘)' && item.filePath !== '(系统)' && item.filePath !== '(Web目录)' ? `<span class="bl-value-filepath" title="${this.escapeHtml(item.filePath)}">${this.escapeHtml(item.filePath)}</span>` : ''}
             </div>
+            ${item.recommendedValue ? `
+              <div class="bl-edit-row">
+                ${this.renderEditControl(item, displayVal)}
+                ${!['按需设置', '按需配置', '无 NOPASSWD 条目', '非默认端口'].includes(item.recommendedValue) ? `
+                  <button class="bl-btn-apply-rec" data-bl-action="apply-recommended" data-bl-item-id="${item.id}" title="应用推荐值: ${this.escapeHtml(item.recommendedValue)}">
+                    ${Lightning({ theme: 'outline', size: '14', fill: 'currentColor' })} 推荐值
+                  </button>
+                ` : ''}
+                ${isModified ? `
+                  <button class="bl-btn-revert" data-bl-action="revert-item" data-bl-item-id="${item.id}" title="撤销修改">
+                    ${CloseOne({ theme: 'outline', size: '14', fill: 'currentColor' })} 撤销
+                  </button>
+                ` : ''}
+              </div>
+            ` : ''}
           </div>
         </div>
       `;
@@ -386,10 +412,92 @@ export class BaselineRenderer {
         <div class="bl-editor-header">
           <span class="bl-editor-icon">${icon}</span>
           <span class="bl-editor-title">${this.escapeHtml(category.title)}</span>
+          ${isCategoryReadOnly ? `<span class="bl-readonly-header-badge">只读排查模式</span>` : ''}
           ${category.hint ? `<span class="bl-editor-hint">${this.escapeHtml(category.hint)}</span>` : ''}
         </div>
         <div class="bl-config-list" id="bl-config-list">
           ${items}
+        </div>
+      </div>
+    `;
+  }
+
+  /** 渲染只读排查/扫描结果框 */
+  private renderInspectResultBlock(item: BaselineConfigItem, currentVal: string): string {
+    if (currentVal === '...' || currentVal === '加载中...') {
+      return `
+        <div class="bl-inspect-result-box bl-inspect-loading">
+          <div class="bl-loading-spinner" style="width:16px;height:16px;border-width:2px;"></div>
+          <span>正在排查/读取数据...</span>
+        </div>
+      `;
+    }
+
+    const trimmedVal = (currentVal || '').trim();
+
+    // 剥离所有的 === title === 分隔行和结尾的 scan done 标识，检查是否有实质检测内容
+    const nonHeaderLines = trimmedVal
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !/^===\s*.*\s*===$/.test(line) && line !== 'scan done' && line !== 'scan complete' && line !== 'keys' && line !== '---');
+
+    const hasRealFindings = nonHeaderLines.length > 0;
+
+    // 状态判定：无异常词汇或剥离标题头后无实质命中内容
+    const isCleanNoIssues =
+      !trimmedVal ||
+      !hasRealFindings ||
+      trimmedVal === 'scan done' ||
+      trimmedVal === '无可疑文件' ||
+      trimmedVal === '无可疑连接' ||
+      trimmedVal === '无异常可写文件' ||
+      trimmedVal === '无异常' ||
+      trimmedVal === '存在' ||
+      trimmedVal === 'none' ||
+      trimmedVal === 'not set' ||
+      trimmedVal === 'GRUB password set' ||
+      trimmedVal.includes('(未找到匹配记录/无异常)') ||
+      trimmedVal.includes('(工具或记录不可用/无异常)') ||
+      trimmedVal.includes('未检测到') ||
+      trimmedVal.includes('not found') ||
+      trimmedVal.includes('上次启动时间') ||
+      trimmedVal.includes('system boot') ||
+      trimmedVal.includes('(未找到 Web 目录') ||
+      trimmedVal.includes('(无sudo失败记录)') ||
+      trimmedVal.includes('(无SSH失败记录)') ||
+      trimmedVal.includes('(无su记录)') ||
+      trimmedVal.includes('(无cron日志)') ||
+      trimmedVal.includes('(无可疑连接)') ||
+      trimmedVal.includes('(未找到 Web 目录或无近期修改)');
+
+    // 智能尝试在文本中抽取第一条绝对文件路径 (如 /var/www/... 或 /tmp/... 或 /usr/...)
+    const pathMatch = trimmedVal.match(/(\/(?:var\/www|usr\/share|tmp|etc|opt|home|dev\/shm|usr\/local)[^\s:'"\(\)]+)/i);
+    const extractedFilePath = pathMatch ? pathMatch[1] : null;
+
+    const statusBadgeHtml = isCleanNoIssues
+      ? `<span class="bl-inspect-badge bl-inspect-clean">${CheckOne({ theme: 'outline', size: '12', fill: 'currentColor' })} 无异常 / 安全</span>`
+      : `<span class="bl-inspect-badge bl-inspect-warn">${Caution({ theme: 'outline', size: '12', fill: 'currentColor' })} 需关注 / 发现目标</span>`;
+
+    return `
+      <div class="bl-inspect-result-box ${isCleanNoIssues ? 'is-clean' : 'is-warn'}">
+        <div class="bl-inspect-header">
+          <div class="bl-inspect-status">
+            ${statusBadgeHtml}
+            ${item.filePath && item.filePath !== '(动态检测)' && item.filePath !== '(systemd)' && item.filePath !== '(网络)' && item.filePath !== '(全盘)' && item.filePath !== '(系统)' && item.filePath !== '(Web目录)' ? `<span class="bl-value-filepath" title="${this.escapeHtml(item.filePath)}">${this.escapeHtml(item.filePath)}</span>` : ''}
+          </div>
+          <div class="bl-inspect-actions">
+            ${extractedFilePath ? `
+              <button class="bl-btn-inspect-action" data-bl-action="open-inspect-file" data-bl-filepath="${this.escapeHtml(extractedFilePath)}" title="在文件编辑器中打开 ${this.escapeHtml(extractedFilePath)}">
+                ${FileText({ theme: 'outline', size: '12', fill: 'currentColor' })} 查看文件
+              </button>
+            ` : ''}
+            <button class="bl-btn-inspect-action" data-bl-action="copy-inspect-result" data-bl-item-id="${item.id}" title="复制排查输出内容">
+              ${Copy({ theme: 'outline', size: '12', fill: 'currentColor' })} 复制结果
+            </button>
+          </div>
+        </div>
+        <div class="bl-inspect-content-wrapper">
+          <pre class="bl-inspect-code-block" id="bl-current-${item.id}">${this.escapeHtml(trimmedVal || '(无返回内容)')}</pre>
         </div>
       </div>
     `;

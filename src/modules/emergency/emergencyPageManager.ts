@@ -10,7 +10,7 @@ import { executeEmergencyCommand } from './commandExecution';
 import {
   findCategory, findCommand, getCmdString,
   renderChecksColumn, renderFavoritesColumn, renderDetailShell, emptyDetail,
-  renderFindingsPane, renderInfoPane, renderFindingPanel, parseFindings,
+  renderFindingsPane, renderInfoPane, renderFindingPanel, renderInvestigationPanel, parseFindings,
   type Finding,
 } from './emergencyView';
 
@@ -148,6 +148,7 @@ class EmergencyPageManager {
     w.emergencyLocateFile = (path: string) => this.locateFile(path);
     w.emergencyAddFinding = (path: string) => this.addToInvestigation(path);
     w.emergencyShowFavorites = () => this.showFavorites();
+    w.emergencyShowInvestigation = () => this.showInvestigation();
   }
 
   private openTerminalAt(path: string): void {
@@ -185,6 +186,105 @@ class EmergencyPageManager {
     }
     this.investigation.push(path);
     window.showNotification?.(`已加入调查清单（共 ${this.investigation.length} 项）：${path}`, 'success');
+    this.refreshInvestigationBadge();
+  }
+
+  /** 刷新工具栏调查清单角标 */
+  private refreshInvestigationBadge(): void {
+    const badge = document.getElementById('em-invest-badge');
+    if (badge) {
+      badge.textContent = String(this.investigation.length);
+      badge.style.display = this.investigation.length > 0 ? '' : 'none';
+    }
+  }
+
+  /** 以模态框显示调查清单 */
+  private showInvestigation(): void {
+    document.getElementById('em-invest-modal-overlay')?.remove();
+    const ov = document.createElement('div');
+    ov.id = 'em-invest-modal-overlay';
+    ov.className = 'em-invest-modal-overlay';
+    ov.innerHTML = `<div class="em-invest-modal">${renderInvestigationPanel(this.investigation)}</div>`;
+    document.body.appendChild(ov);
+
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    ov.addEventListener('click', e => { if (e.target === ov) close(); });
+    document.addEventListener('keydown', onKey);
+
+    // 面板内事件委托
+    ov.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+
+      // 移除单项
+      const removeBtn = target.closest('[data-em-invest-remove]') as HTMLElement | null;
+      if (removeBtn) {
+        const idx = parseInt(removeBtn.getAttribute('data-em-invest-remove') || '0', 10);
+        if (idx >= 0 && idx < this.investigation.length) {
+          const removed = this.investigation.splice(idx, 1)[0];
+          window.showNotification?.(`已移除：${removed}`, 'info');
+          this.refreshInvestigationBadge();
+          // 重新渲染面板内容
+          const modal = ov.querySelector('.em-invest-modal');
+          if (modal) modal.innerHTML = renderInvestigationPanel(this.investigation);
+          if (!this.investigation.length) close();
+        }
+        return;
+      }
+
+      // 清空全部
+      if (target.closest('[data-em-invest-clear]')) {
+        this.investigation = [];
+        window.showNotification?.('调查清单已清空', 'info');
+        this.refreshInvestigationBadge();
+        close();
+        return;
+      }
+
+      // 导出
+      if (target.closest('[data-em-invest-export]')) {
+        this.exportInvestigation();
+        return;
+      }
+
+      // 终端
+      const termBtn = target.closest('[data-em-invest-terminal]') as HTMLElement | null;
+      if (termBtn) {
+        const idx = parseInt(termBtn.getAttribute('data-em-invest-terminal') || '0', 10);
+        this.openTerminalAt(this.investigation[idx] || '');
+        return;
+      }
+
+      // 定位文件
+      const locBtn = target.closest('[data-em-invest-locate]') as HTMLElement | null;
+      if (locBtn) {
+        const idx = parseInt(locBtn.getAttribute('data-em-invest-locate') || '0', 10);
+        this.locateFile(this.investigation[idx] || '');
+        return;
+      }
+    });
+  }
+
+  /** 导出调查清单为 JSON */
+  private exportInvestigation(): void {
+    if (!this.investigation.length) {
+      window.showNotification?.('调查清单为空', 'info');
+      return;
+    }
+    try {
+      const blob = new Blob([JSON.stringify({ investigation: this.investigation, exportedAt: new Date().toISOString() }, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `investigation-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      window.showNotification?.('调查清单已导出', 'success');
+    } catch (e) {
+      window.showNotification?.(`导出失败: ${e}`, 'error');
+    }
   }
 
   private showFavorites(): void {
@@ -567,7 +667,6 @@ class EmergencyPageManager {
     const app = (window as any).app;
     const sshManager = app?.sshManager;
     const sshConnectionManager = (window as any).sshConnectionManager;
-    const tauriInvoke = (window as any).__TAURI__?.core?.invoke;
 
     const hasCoordinatorConn = sshManager?.isConnected?.() ?? false;
     const hasDirectConn = sshConnectionManager?.isConnected?.() ?? false;
@@ -605,7 +704,7 @@ class EmergencyPageManager {
     let durationMs = 0;
 
     try {
-      if (hasDirectConn && tauriInvoke) {
+      if (hasDirectConn) {
         try {
           const result = await executeEmergencyCommand({
             command,
@@ -645,12 +744,14 @@ class EmergencyPageManager {
     this.lastOutput = rawOutput;
     this.lastExitCode = exitCode;
     this.lastDurationMs = durationMs;
-    const { findings, stats } = parseFindings(rawOutput);
+    const isFileOutput = this.selectedCmd.outputType === 'files';
+    const { findings, stats } = isFileOutput ? parseFindings(rawOutput) : { findings: [], stats: { total: 0, normal: 0, attention: 0, high: 0 } };
     this.currentFindings = findings;
     this.currentStats = stats;
 
     const fp = document.getElementById('em-pane-findings');
-    if (fp) fp.innerHTML = renderFindingsPane(findings, stats);
+    if (fp) fp.innerHTML = isFileOutput ? renderFindingsPane(findings, stats) : '<div class="em-notrun">该命令为文本输出，请切换至「原始输出」标签查看</div>';
+    if (!isFileOutput) this.switchTab('raw');
     const oc = document.getElementById('em-output-content');
     if (oc) oc.innerHTML = this.applyHighlight(rawOutput || '(无输出)');
     const ip = document.getElementById('em-pane-info');

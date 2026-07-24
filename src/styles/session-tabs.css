@@ -13,6 +13,22 @@
   position: relative;
 }
 
+.session-tabs-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 100%;
+  gap: 12px;
+}
+
+/* 切换/关闭进行中：禁止再次点击 Tab，给出忙碌视觉反馈 */
+#session-tabs-container.session-tabs-switching .session-tab {
+  pointer-events: none;
+  opacity: 0.6;
+  cursor: wait;
+}
+
 /* 顶部光效装饰 */
 #session-tabs-container::before {
   content: '';
@@ -44,6 +60,50 @@
   overflow-x: auto;
   scrollbar-width: none;
   padding-top: 4px; /* 向下推一点，让active tab贴底 */
+  flex: 1;
+  min-width: 0;
+}
+
+.session-tabs-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.session-tab-terminal-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 15px;
+  border: 1px solid rgba(124, 58, 237, 0.35);
+  background: linear-gradient(135deg, var(--primary-color, #7c3aed) 0%, #6d28d9 100%);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.25);
+  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  white-space: nowrap;
+}
+
+.session-tab-terminal-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.45);
+  filter: brightness(1.1);
+}
+
+.session-tab-terminal-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(124, 58, 237, 0.3);
+}
+
+.session-tab-terminal-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .session-tabs-list::-webkit-scrollbar {
@@ -248,3 +308,33 @@
 .session-tab:nth-child(2) { animation-delay: 50ms; }
 .session-tab:nth-child(3) { animation-delay: 100ms; }
 .session-tab:nth-child(4) { animation-delay: 150ms; }
+
+/* 新建服务器连接按钮 */
+.session-tab-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px dashed var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.session-tab-add-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-style: solid;
+  border-color: var(--primary-color);
+  transform: scale(1.05);
+}
+
+.session-tab-add-btn svg {
+  width: 15px;
+  height: 15px;
+}

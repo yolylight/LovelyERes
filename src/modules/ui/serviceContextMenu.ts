@@ -259,7 +259,7 @@ export class ServiceContextMenu extends BaseContextMenu {
     const service = this.currentService
     const actions: Record<string, MenuAction> = {
       // 基本信息
-      'status': { command: `systemctl status ${service} 2>/dev/null || service ${service} status 2>/dev/null || echo "无法获取服务状态"`, title: `服务状态 - ${service}`, actionName: '查看服务状态' },
+      'status': { command: `systemctl status ${service} --no-pager 2>&1 || service ${service} status 2>&1 || true`, title: `服务状态 - ${service}`, actionName: '查看服务状态' },
       'config': { command: `systemctl cat ${service} 2>/dev/null || cat /etc/init.d/${service} 2>/dev/null || echo "无法找到配置文件"`, title: `配置文件 - ${service}`, actionName: '查看配置文件' },
       'details': { command: `systemctl show ${service} 2>/dev/null || echo "无法获取详细信息"`, title: `详细信息 - ${service}`, actionName: '查看详细信息' },
 

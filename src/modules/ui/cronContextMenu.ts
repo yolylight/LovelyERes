@@ -271,6 +271,132 @@ export class CronContextMenu extends BaseContextMenu {
           return { command: `echo "=== 用户Crontab: ${u} ==="; echo ""; crontab -u ${u} -l`, title: `用户Crontab - ${u}`, actionName: '查看源文件' }
         }
       },
+      'schedule': {
+        command: `echo "=== 执行时间表分析 ==="; echo ""; echo "Cron 表达式: ${schedule}"; echo ""; pybin=$(command -v python3 || command -v python || command -v python2); if [ -n "$pybin" ]; then "$pybin" -c '
+import sys
+
+try:
+    expr = "${schedule}"
+    shortcuts = {
+        "@reboot": "系统启动/重启时自动执行",
+        "@hourly": "每小时整点执行 (00:00, 01:00, 02:00 ...)",
+        "@daily": "每天凌晨 00:00 执行一次",
+        "@midnight": "每天午夜 00:00 执行一次",
+        "@weekly": "每周日凌晨 00:00 执行一次",
+        "@monthly": "每月 1 日凌晨 00:00 执行一次",
+        "@yearly": "每年 1 月 1 日凌晨 00:00 执行一次",
+        "@annually": "每年 1 月 1 日凌晨 00:00 执行一次"
+    }
+
+    if expr in shortcuts:
+        print("💡 含义解读:")
+        print("👉 %s" % shortcuts[expr])
+    else:
+        parts = expr.split()
+        if len(parts) == 5:
+            m, h, dom, mon, dow = parts[0], parts[1], parts[2], parts[3], parts[4]
+            dow_names = {"0":"周日","1":"周一","2":"周二","3":"周三","4":"周四","5":"周五","6":"周六","7":"周日"}
+            
+            # 1. 日期/星期/月份说明
+            date_desc = ""
+            if dow != "*":
+                if dow == "1-5": date_desc = "每周一至周五"
+                elif dow in ["0,6","6,0","6,7","7,6"]: date_desc = "每周六、周日"
+                elif "-" in dow and "," not in dow:
+                    s, e = dow.split("-")
+                    date_desc = "每周%s至%s" % (dow_names.get(s,s), dow_names.get(e,e))
+                else:
+                    d_items = [dow_names.get(x,x) for x in dow.split(",")]
+                    date_desc = "每" + "、".join(d_items)
+            elif dom != "*":
+                if "-" in dom:
+                    s, e = dom.split("-")
+                    date_desc = "每月 %s 到 %s 日" % (s, e)
+                else:
+                    date_desc = "每月 %s 日" % "、".join(dom.split(","))
+            else:
+                date_desc = "每天"
+
+            if mon != "*":
+                date_desc = ("每年 %s 月 " % "、".join(mon.split(","))) + date_desc
+
+            # 2. 分钟详细解析
+            m_detail = ""
+            if m == "*":
+                m_detail = "每分钟"
+            elif m.startswith("*/"):
+                m_detail = "每隔 %s 分钟" % m.split("/")[1]
+            elif "/" in m:
+                r_p, st = m.split("/")
+                if "-" in r_p:
+                    sm, em = r_p.split("-")
+                    m_detail = "在第 %s 至 %s 分钟期间每隔 %s 分钟" % (sm, em, st)
+                else:
+                    m_detail = "从第 %s 分钟起每隔 %s 分钟" % (r_p, st)
+            elif "-" in m:
+                sm, em = m.split("-")
+                m_detail = "在第 %s 至 %s 分钟" % (sm, em)
+            elif "," in m:
+                m_detail = "在第 %s 分钟" % "、".join(m.split(","))
+            elif m.isdigit():
+                m_detail = "第 %s 分钟" % m
+            else:
+                m_detail = m
+
+            # 3. 小时详细解析
+            h_detail = ""
+            if h == "*":
+                h_detail = "每小时"
+            elif h.startswith("*/") or "/" in h:
+                st = h.split("/")[1]
+                h_detail = "每隔 %s 小时" % st
+            elif "-" in h and "," not in h:
+                sh, eh = h.split("-")
+                if sh.isdigit() and eh.isdigit():
+                    h_detail = "在 %02d:00 至 %02d:00 期间" % (int(sh), int(eh))
+                else:
+                    h_detail = "在 %s 点至 %s 点期间" % (sh, eh)
+            elif "," in h:
+                h_detail = "在 %s 点" % "、".join(h.split(","))
+            elif h.isdigit():
+                h_detail = "%02d 点" % int(h)
+            else:
+                h_detail = h
+
+            # 4. 自然语言合成
+            human_readable = ""
+            if m == "*" and h == "*":
+                human_readable = "每分钟执行一次" if date_desc == "每天" else date_desc + "的每分钟执行一次"
+            elif m.startswith("*/") and h == "*":
+                human_readable = "%s执行一次" % m_detail if date_desc == "每天" else "%s的 %s执行一次" % (date_desc, m_detail)
+            elif "/" in m and h == "*":
+                human_readable = "每小时%s执行一次" % m_detail if date_desc == "每天" else "%s每小时%s执行一次" % (date_desc, m_detail)
+            elif m.isdigit() and h == "*":
+                human_readable = "每小时的第 %d 分钟执行 (例如 00:%02d, 01:%02d ...)" % (int(m), int(m), int(m))
+                if date_desc != "每天": human_readable = date_desc + "的" + human_readable
+            elif m.isdigit() and h.isdigit():
+                time_str = "%02d:%02d" % (int(h), int(m))
+                human_readable = "%s的 %s 执行" % (date_desc, time_str) if date_desc != "每天" else "每天的 %s 执行" % time_str
+            else:
+                human_readable = "%s的 %s %s 执行" % (date_desc, h_detail, m_detail) if date_desc != "每天" else "%s %s 执行" % (h_detail, m_detail)
+
+            print("💡 含义解读:")
+            print("👉 %s" % human_readable)
+            print("")
+            print("📋 字段拆解说明:")
+            print("- 分钟 (%s): %s" % (m, m_detail))
+            print("- 小时 (%s): %s" % (h, h_detail))
+            print("- 日期 (%s): %s" % (dom, "每天" if dom=="*" else ("第 %s 日" % dom)))
+            print("- 月份 (%s): %s" % (mon, "每月" if mon=="*" else ("%s 月" % mon)))
+            print("- 星期 (%s): %s" % (dow, "每星期" if dow=="*" else ("%s" % dow)))
+        else:
+            print("非标准 5 字段 Cron 表达式: %s" % expr)
+except Exception as err:
+    print("表达式说明: %s" % str(err))
+'; else if [ "${schedule}" = "@hourly" ]; then echo "含义: 每小时执行一次 (0 * * * *)"; elif [ "${schedule}" = "@daily" ] || [ "${schedule}" = "@midnight" ]; then echo "含义: 每天午夜执行 (0 0 * * *)"; elif [ "${schedule}" = "@weekly" ]; then echo "含义: 每周日午夜执行 (0 0 * * 0)"; elif [ "${schedule}" = "@monthly" ]; then echo "含义: 每月1号午夜执行 (0 0 1 * *)"; else echo "${schedule}" | awk '{print "分钟: "$1" (0-59)"; print "小时: "$2" (0-23)"; print "日期: "$3" (1-31)"; print "月份: "$4" (1-12)"; print "星期: "$5" (0-7)"}'; fi; fi; true`,
+        title: `执行时间表 - ${schedule}`,
+        actionName: '查看执行时间表'
+      },
       'delete-task-file': {
         command: `echo "正在删除文件: ${source}"; rm -f "${source}" && echo "✓ 删除成功" || echo "✗ 删除失败"`,
         title: `删除任务文件 - ${source}`,
@@ -282,11 +408,6 @@ export class CronContextMenu extends BaseContextMenu {
         command: `echo "=== 计划任务详情 ==="; echo ""; echo "用户: ${user}"; echo "时间表: ${schedule}"; echo "命令: ${command}"; echo ""; echo "=== 任务状态 ==="; crontab -u ${user} -l 2>/dev/null | grep -F "${command}" || echo "任务可能已被删除或修改"`,
         title: `计划任务详情 - ${user}`,
         actionName: '查看任务详情'
-      },
-      'schedule': {
-        command: `echo "=== 执行时间表分析 ==="; echo ""; echo "Cron表达式: ${schedule}"; echo ""; echo "字段说明:"; echo "分钟(0-59) 小时(0-23) 日(1-31) 月(1-12) 星期(0-7)"; echo ""; echo "当前表达式解析:"; echo "${schedule}" | awk '{print "分钟: "$1; print "小时: "$2; print "日期: "$3; print "月份: "$4; print "星期: "$5}'`,
-        title: `执行时间表 - ${schedule}`,
-        actionName: '查看执行时间表'
       },
       'command': {
         command: `echo "=== 执行命令 ==="; echo ""; echo "${command}"; echo ""; echo "=== 命令分析 ==="; which ${command.split(' ')[0]} 2>/dev/null || echo "命令路径: 未找到或不在PATH中"`,
@@ -330,12 +451,145 @@ export class CronContextMenu extends BaseContextMenu {
 
       // 时间分析
       'parse-cron': {
-        command: `echo "=== Cron表达式解析 ==="; echo ""; echo "表达式: ${schedule}"; echo ""; if [[ "${schedule}" == "@hourly" ]]; then echo "含义: 每小时执行一次 (0 * * * *)"; elif [[ "${schedule}" == "@daily" ]] || [[ "${schedule}" == "@midnight" ]]; then echo "含义: 每天午夜执行 (0 0 * * *)"; elif [[ "${schedule}" == "@weekly" ]]; then echo "含义: 每周日午夜执行 (0 0 * * 0)"; elif [[ "${schedule}" == "@monthly" ]]; then echo "含义: 每月1号午夜执行 (0 0 1 * *)"; elif [[ "${schedule}" == "@yearly" ]] || [[ "${schedule}" == "@annually" ]]; then echo "含义: 每年1月1日午夜执行 (0 0 1 1 *)"; elif [[ "${schedule}" == "@reboot" ]]; then echo "含义: 系统启动时执行"; else echo "标准cron表达式"; echo "${schedule}" | awk '{print "分钟: "$1" (0-59)"; print "小时: "$2" (0-23)"; print "日期: "$3" (1-31)"; print "月份: "$4" (1-12)"; print "星期: "$5" (0-7, 0和7都表示周日)"}'; fi`,
+        command: `echo "=== Cron表达式解析 ==="; echo ""; echo "Cron 表达式: ${schedule}"; echo ""; pybin=$(command -v python3 || command -v python || command -v python2); if [ -n "$pybin" ]; then "$pybin" -c '
+import sys
+
+expr = "${schedule}"
+shortcuts = {
+    "@reboot": "系统启动/重启时自动执行",
+    "@hourly": "每小时整点执行 (00:00, 01:00, 02:00 ...)",
+    "@daily": "每天凌晨 00:00 执行一次",
+    "@midnight": "每天午夜 00:00 执行一次",
+    "@weekly": "每周日凌晨 00:00 执行一次",
+    "@monthly": "每月 1 日凌晨 00:00 执行一次",
+    "@yearly": "每年 1 月 1 日凌晨 00:00 执行一次",
+    "@annually": "每年 1 月 1 日凌晨 00:00 执行一次"
+}
+
+if expr in shortcuts:
+    print("💡 含义解读: 👉 %s" % shortcuts[expr])
+else:
+    parts = expr.split()
+    if len(parts) == 5:
+        m, h, dom, mon, dow = parts[0], parts[1], parts[2], parts[3], parts[4]
+        dow_names = {"0":"周日","1":"周一","2":"周二","3":"周三","4":"周四","5":"周五","6":"周六","7":"周日"}
+        
+        date_desc = ""
+        if dow != "*":
+            if dow == "1-5": date_desc = "每周一至周五"
+            elif dow in ["0,6","6,0","6,7","7,6"]: date_desc = "每周六、周日"
+            elif "-" in dow and "," not in dow:
+                s, e = dow.split("-")
+                date_desc = "每周%s至%s" % (dow_names.get(s,s), dow_names.get(e,e))
+            else:
+                d_items = [dow_names.get(x,x) for x in dow.split(",")]
+                date_desc = "每" + "、".join(d_items)
+        elif dom != "*":
+            if "-" in dom:
+                s, e = dom.split("-")
+                date_desc = "每月 %s 到 %s 日" % (s, e)
+            else:
+                date_desc = "每月 %s 日" % "、".join(dom.split(","))
+        else:
+            date_desc = "每天"
+
+        if mon != "*":
+            date_desc = ("每年 %s 月 " % "、".join(mon.split(","))) + date_desc
+
+        time_desc = ""
+        is_interval = False
+        if m == "*" and h == "*":
+            time_desc = "每分钟"
+            is_interval = True
+        elif m.startswith("*/") and h == "*":
+            step = m.split("/")[1]
+            time_desc = "每隔 %s 分钟" % step
+            is_interval = True
+        elif m.startswith("*/") and h.isdigit():
+            step = m.split("/")[1]
+            time_desc = "在 %02d 点期间每隔 %s 分钟" % (int(h), step)
+            is_interval = True
+        elif m.isdigit() and h == "*":
+            time_desc = "每小时的第 %d 分钟 (如 00:%02d, 01:%02d ...)" % (int(m), int(m), int(m))
+            is_interval = True
+        elif m.isdigit() and h.isdigit():
+            time_desc = "%02d:%02d" % (int(h), int(m))
+        elif m.isdigit() and "-" in h and "," not in h:
+            s, e = h.split("-")
+            time_desc = "在 %02d:%02d 至 %02d:%02d 期间每小时" % (int(s), int(m), int(e), int(m))
+            is_interval = True
+        elif m.isdigit() and "," in h:
+            h_list = ["%02d:%02d" % (int(x), int(m)) for x in h.split(",") if x.isdigit()]
+            time_desc = "在 " + "、".join(h_list)
+        else:
+            time_desc = "%s点%s分" % (h, m)
+
+        if is_interval and date_desc == "每天":
+            human_readable = time_desc + "执行"
+        else:
+            human_readable = date_desc + "的 " + time_desc + " 执行"
+
+        print("💡 含义解读: 👉 %s" % human_readable)
+        print("📋 字段拆解说明:")
+        print("- 分钟 (%s): %s" % (m, "每分钟" if m=="*" else ("每隔 %s 分钟" % m.split("/")[1] if m.startswith("*/") else ("第 %s 分钟" % m))))
+        print("- 小时 (%s): %s" % (h, "每小时" if h=="*" else ("%s 点" % h)))
+        print("- 日期 (%s): %s" % (dom, "每天" if dom=="*" else ("第 %s 日" % dom)))
+        print("- 月份 (%s): %s" % (mon, "每月" if mon=="*" else ("%s 月" % mon)))
+        print("- 星期 (%s): %s" % (dow, "每星期" if dow=="*" else ("%s" % dow)))
+    else:
+        print("非标准 5 字段 Cron 表达式: %s" % expr)
+' 2>/dev/null; else if [ "${schedule}" = "@hourly" ]; then echo "含义: 每小时执行一次 (0 * * * *)"; elif [ "${schedule}" = "@daily" ] || [ "${schedule}" = "@midnight" ]; then echo "含义: 每天午夜执行 (0 0 * * *)"; elif [ "${schedule}" = "@weekly" ]; then echo "含义: 每周日午夜执行 (0 0 * * 0)"; elif [ "${schedule}" = "@monthly" ]; then echo "含义: 每月1号午夜执行 (0 0 1 * *)"; else echo "${schedule}" | awk '{print "分钟: "$1" (0-59)"; print "小时: "$2" (0-23)"; print "日期: "$3" (1-31)"; print "月份: "$4" (1-12)"; print "星期: "$5" (0-7)"}'; fi; fi; true`,
         title: `Cron表达式解析 - ${schedule}`,
         actionName: '解析cron表达式'
       },
       'next-run': {
-        command: `echo "=== 下次执行时间 ==="; echo ""; echo "当前时间: $(date '+%Y-%m-%d %H:%M:%S')"; echo "时间表: ${schedule}"; echo ""; echo "⚠️ 注意：精确计算需要安装croniter等工具"; echo ""; if [[ "${schedule}" == "@hourly" ]]; then echo "下次执行: 下一个整点"; elif [[ "${schedule}" == "@daily" ]]; then echo "下次执行: 明天 00:00"; elif [[ "${schedule}" == "@weekly" ]]; then echo "下次执行: 下周日 00:00"; elif [[ "${schedule}" == "@monthly" ]]; then echo "下次执行: 下月1日 00:00"; else echo "标准cron表达式，请使用cron计算工具"; fi`,
+        command: `echo "=== 下次执行时间 ==="; echo ""; echo "当前时间: $(date '+%Y-%m-%d %H:%M:%S')"; echo "时间表: ${schedule}"; echo ""; pybin=$(command -v python3 || command -v python || command -v python2); if [ -n "$pybin" ]; then "$pybin" -c '
+import sys, datetime
+schedule = "${schedule}"
+shortcuts = {"@hourly":"0 * * * *","@daily":"0 0 * * *","@midnight":"0 0 * * *","@weekly":"0 0 * * 0","@monthly":"0 0 1 * *","@yearly":"0 0 1 1 *"}
+schedule = shortcuts.get(schedule, schedule)
+if schedule == "@reboot":
+    print("下次执行时间: 系统下次启动/重启时")
+else:
+    parts = schedule.split()
+    if len(parts) == 5:
+        def parse(f, mi, ma):
+            r = set()
+            for p in f.split(","):
+                if "/" in p:
+                    sub, st = p.split("/"); st = int(st)
+                    if sub == "*": a, b = mi, ma
+                    elif "-" in sub: a, b = map(int, sub.split("-"))
+                    else: a, b = int(sub), ma
+                    r.update(range(a, b + 1, st))
+                elif "-" in p:
+                    a, b = map(int, p.split("-")); r.update(range(a, b + 1))
+                elif p == "*": r.update(range(mi, ma + 1))
+                elif p.isdigit(): r.add(int(p))
+            return r
+        try:
+            mins, hrs, days, mos, dows = parse(parts[0],0,59), parse(parts[1],0,23), parse(parts[2],1,31), parse(parts[3],1,12), parse(parts[4],0,7)
+            if 7 in dows: dows.add(0)
+            now = datetime.datetime.now().replace(second=0, microsecond=0)
+            curr = now + datetime.timedelta(minutes=1)
+            limit = now + datetime.timedelta(days=366)
+            found = None
+            while curr <= limit:
+                if curr.month in mos and curr.day in days and curr.hour in hrs and curr.minute in mins and (curr.weekday()+1)%7 in dows:
+                    found = curr; break
+                curr += datetime.timedelta(minutes=1)
+            if found:
+                diff = int((found - datetime.datetime.now()).total_seconds())
+                h, rem = divmod(diff, 3600); m, _ = divmod(rem, 60)
+                ds = "%d 小时 %d 分钟" % (h, m) if h > 0 else "%d 分钟" % m
+                print("下次执行时间: %s (约 %s 后)" % (found.strftime("%Y-%m-%d %H:%M:%S"), ds))
+            else:
+                print("下次执行时间: 未能在未来一年内匹配到有效执行时刻")
+        except Exception as e:
+            print("计算失败: %s" % str(e))
+    else:
+        print("非标准 5 字段 Cron 表达式: %s" % schedule)
+' 2>/dev/null; else if [ "${schedule}" = "@hourly" ]; then echo "下次执行时间: 下一个整点"; elif [ "${schedule}" = "@daily" ]; then echo "下次执行时间: 明天 00:00"; elif [ "${schedule}" = "@weekly" ]; then echo "下次执行时间: 下周日 00:00"; elif [ "${schedule}" = "@monthly" ]; then echo "下次执行时间: 下月1日 00:00"; else echo "下次执行时间: 请参考 Cron 规则计算 (${schedule})"; fi; fi; true`,
         title: `下次执行时间 - ${schedule}`,
         actionName: '查看下次执行时间'
       },

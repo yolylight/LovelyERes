@@ -129,7 +129,7 @@ export class TimerContextMenu extends BaseContextMenu {
 
     const actions: Record<string, MenuAction> = {
       'timer-status': {
-        command: `systemctl status ${timer} --no-pager`,
+        command: `systemctl status ${timer} --no-pager || true`,
         title: `定时器状态 - ${timer}`,
         actionName: '查看定时器状态'
       },
@@ -139,7 +139,7 @@ export class TimerContextMenu extends BaseContextMenu {
         actionName: '查看定时器配置'
       },
       'unit-status': {
-        command: `systemctl status ${activates} --no-pager`,
+        command: `systemctl status ${activates} --no-pager || true`,
         title: `单元状态 - ${activates}`,
         actionName: '查看触发单元状态'
       },
@@ -159,17 +159,17 @@ export class TimerContextMenu extends BaseContextMenu {
         actionName: '查看触发单元日志'
       },
       'stop-timer': {
-        command: `systemctl stop ${timer} && echo '✓ 定时器已停止' && systemctl status ${timer} --no-pager`,
+        command: `systemctl stop ${timer} && echo '✓ 定时器已停止' && (systemctl status ${timer} --no-pager || true)`,
         title: `停止 - ${timer}`,
         actionName: '停止定时器'
       },
       'disable-timer': {
-        command: `systemctl disable ${timer} && echo '✓ 定时器已禁用' && systemctl status ${timer} --no-pager`,
+        command: `systemctl disable ${timer} && echo '✓ 定时器已禁用' && (systemctl status ${timer} --no-pager || true)`,
         title: `禁用 - ${timer}`,
         actionName: '禁用定时器'
       },
       'mask-timer': {
-        command: `systemctl mask ${timer} && echo '✓ 定时器已屏蔽' && systemctl status ${timer} --no-pager`,
+        command: `systemctl mask ${timer} && echo '✓ 定时器已屏蔽' && (systemctl status ${timer} --no-pager || true)`,
         title: `屏蔽 - ${timer}`,
         actionName: '屏蔽定时器'
       }

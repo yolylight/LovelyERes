@@ -19,103 +19,104 @@ export interface HighlightRule {
   description: string;
 }
 
-// ════════════════════════════════════
-// SUID / 权限相关
-// ════════════════════════════════════
+/** 生成 SUID 规则的正则表达式：精确匹配纯路径输出行 (find) 或带 SUID 权限位 (-rws) 的文件属性行，避免在 ps 进程等无 SUID 标记的输出中误报 */
+function makeSuidPattern(binaryPatternStr: string): RegExp {
+  return new RegExp(`(?:^\\s*\\/(?:[^\\/\\s]+\\/)*${binaryPatternStr}\\s*$|^-[r-][w-][sS].*\\/${binaryPatternStr}\\b)`, 'i');
+}
 
 const suidRules: HighlightRule[] = [
   {
-    id: 'suid-nmap', pattern: /nmap/i,
+    id: 'suid-nmap', pattern: makeSuidPattern('nmap'),
     level: 'critical', label: 'SUID提权',
     description: 'nmap 具有 SUID 位，可通过 --interactive 提权到 root',
   },
   {
-    id: 'suid-find', pattern: /\/find\b/,
+    id: 'suid-find', pattern: makeSuidPattern('find'),
     level: 'critical', label: 'SUID提权',
     description: 'find 具有 SUID 位，可通过 -exec 提权',
   },
   {
-    id: 'suid-vim', pattern: /\/vim?\b/,
+    id: 'suid-vim', pattern: makeSuidPattern('vim?'),
     level: 'critical', label: 'SUID提权',
     description: 'vi/vim 具有 SUID 位，可通过 :!sh 提权',
   },
   {
-    id: 'suid-python', pattern: /\/python[23]?(\.\d+)?\b/,
+    id: 'suid-python', pattern: makeSuidPattern('python[23]?(?:\\.\\d+)?'),
     level: 'critical', label: 'SUID提权',
     description: 'python 具有 SUID 位，可直接执行 os.system 提权',
   },
   {
-    id: 'suid-perl', pattern: /\/perl\b/,
+    id: 'suid-perl', pattern: makeSuidPattern('perl'),
     level: 'critical', label: 'SUID提权',
     description: 'perl 具有 SUID 位，可执行系统命令提权',
   },
   {
-    id: 'suid-ruby', pattern: /\/ruby\b/,
+    id: 'suid-ruby', pattern: makeSuidPattern('ruby'),
     level: 'critical', label: 'SUID提权',
     description: 'ruby 具有 SUID 位，可执行系统命令提权',
   },
   {
-    id: 'suid-bash', pattern: /\/bash\b/,
+    id: 'suid-bash', pattern: makeSuidPattern('bash'),
     level: 'critical', label: 'SUID提权',
     description: 'bash 具有 SUID 位，可直接获取 root shell (bash -p)',
   },
   {
-    id: 'suid-less', pattern: /\/less\b/,
+    id: 'suid-less', pattern: makeSuidPattern('less'),
     level: 'warning', label: 'SUID可疑',
     description: 'less 具有 SUID 位，可通过 !sh 提权',
   },
   {
-    id: 'suid-more', pattern: /\/more\b/,
+    id: 'suid-more', pattern: makeSuidPattern('more'),
     level: 'warning', label: 'SUID可疑',
     description: 'more 具有 SUID 位，可通过 !sh 提权',
   },
   {
-    id: 'suid-nano', pattern: /\/nano\b/,
+    id: 'suid-nano', pattern: makeSuidPattern('nano'),
     level: 'warning', label: 'SUID可疑',
     description: 'nano 具有 SUID 位，可读写任意文件',
   },
   {
-    id: 'suid-wget', pattern: /\/wget\b/,
+    id: 'suid-wget', pattern: makeSuidPattern('wget'),
     level: 'critical', label: 'SUID提权',
     description: 'wget 具有 SUID 位，可覆盖系统文件 (wget -O /etc/passwd)',
   },
   {
-    id: 'suid-curl', pattern: /\/curl\b/,
+    id: 'suid-curl', pattern: makeSuidPattern('curl'),
     level: 'warning', label: 'SUID可疑',
     description: 'curl 具有 SUID 位，可读取任意文件 (curl file:///etc/shadow)',
   },
   {
-    id: 'suid-cp', pattern: /\/cp\b/,
+    id: 'suid-cp', pattern: makeSuidPattern('cp'),
     level: 'critical', label: 'SUID提权',
     description: 'cp 具有 SUID 位，可覆盖 /etc/passwd 或 /etc/shadow',
   },
   {
-    id: 'suid-mv', pattern: /\/mv\b/,
+    id: 'suid-mv', pattern: makeSuidPattern('mv'),
     level: 'critical', label: 'SUID提权',
     description: 'mv 具有 SUID 位，可替换系统文件',
   },
   {
-    id: 'suid-awk', pattern: /\/[gm]?awk\b/,
+    id: 'suid-awk', pattern: makeSuidPattern('[gm]?awk'),
     level: 'critical', label: 'SUID提权',
     description: 'awk 具有 SUID 位，可通过 system() 提权',
   },
   {
-    id: 'suid-env', pattern: /\/env\b/,
+    id: 'suid-env', pattern: makeSuidPattern('env'),
     level: 'critical', label: 'SUID提权',
     description: 'env 具有 SUID 位，可直接执行任意命令',
   },
   {
-    id: 'suid-tar', pattern: /\/tar\b/,
+    id: 'suid-tar', pattern: makeSuidPattern('tar'),
     level: 'warning', label: 'SUID可疑',
     description: 'tar 具有 SUID 位，可通过 --checkpoint-action 执行命令',
   },
   {
-    id: 'suid-docker', pattern: /\/docker\b/,
+    id: 'suid-docker', pattern: makeSuidPattern('docker'),
     level: 'critical', label: 'SUID提权',
     description: 'docker 具有 SUID 位，可直接挂载宿主机文件系统逃逸',
   },
   {
-    id: 'suid-pkexec', pattern: /\/pkexec\b/,
+    id: 'suid-pkexec', pattern: makeSuidPattern('pkexec'),
     level: 'critical', label: 'CVE提权',
     description: 'pkexec 具有 SUID 位，CVE-2021-4034 可直接提权',
   },
@@ -201,7 +202,7 @@ const networkRules: HighlightRule[] = [
 
 const userRules: HighlightRule[] = [
   {
-    id: 'user-uid0', pattern: /^([^:]+):x:0:/,
+    id: 'user-uid0', pattern: /^([a-zA-Z0-9_.\-]+):x:0:/,
     level: 'critical', label: 'UID=0',
     description: '非root用户UID为0，拥有root权限',
   },
@@ -211,7 +212,7 @@ const userRules: HighlightRule[] = [
     description: '该用户具有登录Shell',
   },
   {
-    id: 'user-empty-pass', pattern: /^([^:]+)::/,
+    id: 'user-empty-pass', pattern: /^([a-zA-Z0-9_.\-]+)::(:|\d*:)/,
     level: 'critical', label: '空密码',
     description: '该用户密码字段为空，可无密码登录',
   },
@@ -258,9 +259,9 @@ const persistenceRules: HighlightRule[] = [
     description: '检测到WebShell常见函数特征',
   },
   {
-    id: 'ld-preload', pattern: /ld\.so\.preload|LD_PRELOAD/,
+    id: 'ld-preload', pattern: /(?:^|\s)LD_PRELOAD=\S+|^[a-zA-Z0-9_\/.\-]+\.so\b/m,
     level: 'critical', label: 'Rootkit',
-    description: '检测到LD_PRELOAD劫持特征',
+    description: '检测到 LD_PRELOAD / ld.so.preload 预加载劫持特征',
   },
   {
     id: 'ssh-authorized-keys', pattern: /authorized_keys/,

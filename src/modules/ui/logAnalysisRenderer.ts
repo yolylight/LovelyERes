@@ -198,7 +198,7 @@ export class LogAnalysisRenderer {
         <div class="la-ioc-input-area">
           <div class="la-ioc-left">
             <h3 class="la-section-title">IOC 批量搜索</h3>
-            <p class="la-section-desc">输入 IP / 域名 / 哈希值，每行一个或逗号分隔，将在 auth.log / syslog / secure / messages / audit.log 中搜索</p>
+            <p class="la-section-desc">输入 IP / 域名 / 哈希值，每行一个或逗号分隔，将在 auth.log / syslog / secure / messages / audit.log / lastlog 中搜索</p>
             <textarea id="ioc-input" class="la-ioc-textarea" rows="8"
               placeholder="192.168.1.100&#10;10.0.0.5&#10;evil.example.com&#10;e99a18c428cb38d5f260853678922e03"></textarea>
             <button class="modern-btn primary" onclick="window.executeIocSearch()" style="margin-top:8px">
@@ -249,23 +249,26 @@ export class LogAnalysisRenderer {
   // ==================== 日志源选择器 ====================
 
   private renderFileSelector(): string {
+    const currentName = this.currentLogPath.startsWith('docker:')
+      ? `Container ${this.currentLogPath.replace('docker:', '').substring(0, 8)}`
+      : (this.currentLogPath.split('/').pop() || this.currentLogPath);
+
     return `
-      <select class="la-source-select" id="log-file-select"
-        onchange="window.updateLogPath(this.value)">
-        <optgroup label="系统日志">
-          <option value="/var/log/auth.log" ${this.currentLogPath === '/var/log/auth.log' ? 'selected' : ''}>auth.log</option>
-          <option value="/var/log/secure">secure</option>
-          <option value="/var/log/syslog">syslog</option>
-          <option value="/var/log/messages">messages</option>
-          <option value="/var/log/kern.log">kern.log</option>
-          <option value="/var/log/cron">cron</option>
-          <option value="/var/log/audit/audit.log">audit.log</option>
-          <option value="/var/log/boot.log">boot.log</option>
-        </optgroup>
-        <optgroup label="Docker 容器">
-          <option value="docker:all">所有容器</option>
-        </optgroup>
-      </select>
+      <div class="la-searchable-select" id="log-file-select-container">
+        <div class="la-select-trigger" id="log-file-select-trigger" onclick="window.toggleLogFileDropdown(event)" title="${this.currentLogPath}">
+          <span class="la-select-value-text" id="log-file-selected-label">${currentName}</span>
+          <span class="la-select-arrow">▾</span>
+        </div>
+        <div class="la-select-menu" id="log-file-dropdown-menu" style="display: none;" onclick="event.stopPropagation()">
+          <div class="la-select-search-box">
+            <input type="text" class="la-select-search-input" id="log-file-search-input"
+              placeholder="搜索日志文件/大小/容器..." oninput="window.filterLogFileOptions(this.value)" autocomplete="off" />
+          </div>
+          <div class="la-select-options-list" id="log-file-options-list">
+            <div class="la-select-loading">加载日志源中...</div>
+          </div>
+        </div>
+      </div>
     `;
   }
 

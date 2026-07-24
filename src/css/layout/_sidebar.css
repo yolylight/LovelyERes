@@ -315,6 +315,13 @@
   transform: rotate(90deg);
   opacity: 0.95;
 }
+.sidebar-item-wrap.collapsed > .sidebar-item .sidebar-item-chev {
+  transform: rotate(0deg);
+  opacity: 0.5;
+}
+.sidebar-item-wrap.collapsed > .sidebar-subtree {
+  display: none !important;
+}
 
 /* 嵌套子树容器：再缩进一级，带自己的引导竖线 */
 .sidebar-subtree {

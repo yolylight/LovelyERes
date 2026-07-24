@@ -726,10 +726,7 @@ export class SystemInfoManager {
   private async getNetworkConnectionDetails(): Promise<string> {
     try {
       // 先尝试使用ss命令（显示所有TCP和UDP连接，包括监听和已建立的连接）
-      // -t: TCP, -u: UDP, -a: 所有状态, -n: 数字格式, -p: 显示进程信息
-      // ss输出格式: Netid State Recv-Q Send-Q Local_Address:Port Peer_Address:Port Process
-      // 使用简化的 awk 命令避免复杂引号嵌套导致的解析问题
-      const ssResult = await this.executeCommand(`ss -tunap 2>/dev/null | grep -v "State" | grep -v "Netid" | awk '{print $1","$5","$6","$1","$7",""-"}'`);
+      const ssResult = await this.executeCommand(`ss -tunap 2>/dev/null | tail -n +2 | head -100`);
       if (ssResult && ssResult.trim()) {
         console.log('✅ 使用ss命令获取网络连接详情');
         console.log('📊 网络连接数据:', ssResult.split('\n').length, '条');
@@ -741,9 +738,7 @@ export class SystemInfoManager {
 
     try {
       // 如果ss命令失败，使用netstat命令
-      // netstat输出格式: Proto Recv-Q Send-Q Local Address Foreign Address State [PID/Program]
-      // 使用简化的 awk 命令避免复杂引号嵌套导致的解析问题
-      const netstatResult = await this.executeCommand(`netstat -tunap 2>/dev/null | grep -v "Active" | grep -v "Proto" | awk '{print $1","$4","$5","$6","$7}'`);
+      const netstatResult = await this.executeCommand(`netstat -tunap 2>/dev/null | grep -v "Active" | grep -v "Proto" | head -100`);
       if (netstatResult && netstatResult.trim()) {
         console.log('✅ 使用netstat命令获取网络连接详情');
         console.log('📊 网络连接数据:', netstatResult.split('\n').length, '条');
@@ -755,7 +750,7 @@ export class SystemInfoManager {
 
     try {
       // 最后的fallback：使用简化的ss命令（不显示进程信息）
-      const simpleSsResult = await this.executeCommand(`ss -tuna | grep -v "State" | grep -v "Netid" | awk '{print $1","$5","$6","$1",unknown"}'`);
+      const simpleSsResult = await this.executeCommand(`ss -tuna 2>/dev/null | tail -n +2 | head -100`);
       console.log('✅ 使用简化ss命令获取网络连接详情（无进程信息）');
       return simpleSsResult;
     } catch (error) {
@@ -868,22 +863,120 @@ export class SystemInfoManager {
   }
 
   /**
+   * 清理 IP/端口地址中的接口限定符（例如 192.168.126.128%eth0:68 -> 192.168.126.128:68）
+   */
+  private cleanNetworkAddress(addr: string): string {
+    if (!addr) return '';
+    return addr.replace(/%[^\s:\]]+(?=\]|:|\s|$)/g, '').trim();
+  }
+
+  /**
    * 解析网络连接详情
    */
   private parseNetworkDetails(data: string): Array<{ protocol: string; localAddress: string; foreignAddress: string; state: string; process: string; pid: string }> {
     if (!data.trim()) return [];
 
     return data.trim().split('\n').map(line => {
-      const parts = line.split(',');
+      const trimmed = line.trim();
+      if (!trimmed) return null;
+
+      // 如果是旧版的 |#| 分隔符格式
+      if (trimmed.includes('|#|')) {
+        const parts = trimmed.split('|#|');
+        const protocol = (parts[0] || '').trim();
+        const rawLocal = (parts[1] || '').trim();
+        const rawForeign = (parts[2] || '').trim();
+        let state = (parts[3] || '').trim();
+        const procInfo = (parts[4] || '').trim();
+
+        const localAddress = this.cleanNetworkAddress(rawLocal);
+        const foreignAddress = this.cleanNetworkAddress(rawForeign);
+
+        let process = 'unknown';
+        let pid = '-';
+
+        if (procInfo && procInfo !== '-' && procInfo !== 'unknown') {
+          const pidMatch = procInfo.match(/pid=(\d+)/) || procInfo.match(/^(\d+)\//);
+          if (pidMatch) pid = pidMatch[1];
+
+          const nameMatch = procInfo.match(/"([^"]+)"\s*,\s*pid=/) || procInfo.match(/"([^"]+)"/) || procInfo.match(/^(\d+)\/(.+)$/);
+          if (nameMatch) {
+            process = nameMatch[2] || nameMatch[1];
+          } else {
+            process = procInfo.replace(/^users:\(\(\"?/, '').replace(/["\)]+$/, '').trim();
+          }
+        }
+
+        if (state.includes('/')) {
+          const netstatMatch = state.match(/^(\d+)\/(.+)$/);
+          if (netstatMatch) {
+            pid = netstatMatch[1];
+            process = netstatMatch[2];
+            state = protocol.toLowerCase().includes('udp') ? 'UNCONN' : 'ESTABLISHED';
+          }
+        }
+
+        if (!state || state === '-') {
+          state = protocol.toLowerCase().includes('udp') ? 'UNCONN' : 'UNKNOWN';
+        }
+
+        return { protocol, localAddress, foreignAddress, state, process, pid };
+      }
+
+      // 新版直接智能解析原始 ss/netstat 输出
+      const socketRegex = /(?:\[[0-9a-fA-F:]+\]|[0-9a-fA-F.]+|\*):[0-9*]+/g;
+      const matches = trimmed.match(socketRegex) || [];
+      if (matches.length === 0) return null;
+
+      const rawLocal = matches[0] || '';
+      const rawForeign = matches[1] || '';
+
+      const localAddress = this.cleanNetworkAddress(rawLocal);
+      const foreignAddress = this.cleanNetworkAddress(rawForeign);
+
+      let pid = '-';
+      const pidMatch = trimmed.match(/pid=(\d+)/) || trimmed.match(/\b(\d+)\/[^\s]+/);
+      if (pidMatch) pid = pidMatch[1];
+
+      let process = 'unknown';
+      const ssNameMatch = trimmed.match(/"([^"]+)"\s*,\s*pid=/) || trimmed.match(/"([^"]+)"/) || trimmed.match(/users:\s*\(\(\s*"([^"]+)"/);
+      const netstatNameMatch = trimmed.match(/\b\d+\/([^\s]+)/);
+
+      if (ssNameMatch && ssNameMatch[1]) {
+        process = ssNameMatch[1];
+      } else if (netstatNameMatch && netstatNameMatch[1]) {
+        process = netstatNameMatch[1];
+      } else if (pid !== '-') {
+        const procMatch = trimmed.match(/users:\s*\(\((.+)\)\)/) || trimmed.match(/\s+([^\s]+)$/);
+        if (procMatch) {
+          process = procMatch[1].replace(/["\(\)]/g, '').trim();
+        }
+      }
+
+      let protocol = 'tcp';
+      if (/\budp\b/i.test(trimmed) || /^udp/i.test(trimmed)) {
+        protocol = 'udp';
+      } else if (/\btcp\b/i.test(trimmed) || /^tcp/i.test(trimmed)) {
+        protocol = 'tcp';
+      }
+
+      let state = 'UNKNOWN';
+      const stateMatch = trimmed.match(/\b(ESTAB|ESTABLISHED|LISTEN|UNCONN|TIME-WAIT|CLOSE-WAIT|SYN-SENT|FIN-WAIT-1|FIN-WAIT-2|CLOSING|LAST-ACK)\b/i);
+      if (stateMatch) {
+        state = stateMatch[1].toUpperCase();
+      } else if (protocol === 'udp') {
+        state = 'UNCONN';
+      }
+
       return {
-        protocol: parts[0] || '',
-        localAddress: parts[1] || '',
-        foreignAddress: parts[2] || '',
-        state: parts[3] || '',
-        process: parts[4] || 'unknown',
-        pid: parts[5] || '-'
+        protocol,
+        localAddress,
+        foreignAddress,
+        state,
+        process,
+        pid
       };
-    }).filter(n => n.protocol);
+    }).filter((n): n is { protocol: string; localAddress: string; foreignAddress: string; state: string; process: string; pid: string } => Boolean(n && n.protocol && n.localAddress));
   }
 
   /**
@@ -944,29 +1037,19 @@ export class SystemInfoManager {
   private async getCronJobs(): Promise<string> {
     try {
       const commands = [
-        // 1. 获取所有用户的crontab
-        `for user in $(cut -f1 -d: /etc/passwd); do sudo crontab -u $user -l 2>/dev/null | grep -v "^#" | grep -v "^$" | awk -v u="$user" 'BEGIN{OFS=","} {schedule=$1" "$2" "$3" "$4" "$5; $1=$2=$3=$4=$5=""; print u,schedule,substr($0,6),"crontab:"u}'; done`,
+        // 1. 获取所有用户的 crontab (使用 TAB 分隔: user \t schedule \t command \t source)
+        `for user in $(cut -f1 -d: /etc/passwd); do sudo -n crontab -u $user -l 2>/dev/null | awk -v u="$user" '/^[ \t]*#/ {next} /^[ \t]*$/ {next} /^[ \t]*[A-Za-z_][A-Za-z0-9_]*=/ {next} {if ($1 ~ /^@/) { sched=$1; if (match($0, /^[ \t]*[^ \t]+[ \t]+/)) { cmd=substr($0, RLENGTH+1); gsub(/^[ \t]+|[ \t]+$/, "", cmd); print u"\t"sched"\t"cmd"\tcrontab:"u; } } else if (NF>=6) { sched=$1" "$2" "$3" "$4" "$5; if (match($0, /^([ \t]*[^ \t]+){5}[ \t]+/)) { cmd=substr($0, RLENGTH+1); gsub(/^[ \t]+|[ \t]+$/, "", cmd); print u"\t"sched"\t"cmd"\tcrontab:"u; } } }'; done`,
 
         // 2. 系统级 /etc/crontab
-        `grep -v "^#" /etc/crontab 2>/dev/null | grep -v "^$" | grep -v "^[A-Z]" | awk 'BEGIN{OFS=","} {schedule=$1" "$2" "$3" "$4" "$5; user=$6; $1=$2=$3=$4=$5=$6=""; print user,schedule,substr($0,7),"/etc/crontab"}'`,
+        `awk '/^[ \t]*#/ {next} /^[ \t]*$/ {next} /^[ \t]*[A-Za-z_][A-Za-z0-9_]*=/ {next} {if ($1 ~ /^@/) { sched=$1; u=$2; if (match($0, /^([ \t]*[^ \t]+){2}[ \t]+/)) { cmd=substr($0, RLENGTH+1); gsub(/^[ \t]+|[ \t]+$/, "", cmd); print u"\t"sched"\t"cmd"\t/etc/crontab"; } } else if (NF>=7) { sched=$1" "$2" "$3" "$4" "$5; u=$6; if (match($0, /^([ \t]*[^ \t]+){6}[ \t]+/)) { cmd=substr($0, RLENGTH+1); gsub(/^[ \t]+|[ \t]+$/, "", cmd); print u"\t"sched"\t"cmd"\t/etc/crontab"; } } }' /etc/crontab 2>/dev/null`,
 
         // 3. /etc/cron.d/* 目录下的任务
-        `find /etc/cron.d -type f 2>/dev/null | xargs grep -H -v "^#" 2>/dev/null | grep -v "^$" | sed 's/:/,/' | awk -F, 'BEGIN{OFS=","} {source=$1; $1=""; line=$0; split(line,a," "); schedule=a[2]" "a[3]" "a[4]" "a[5]" "a[6]; user=a[7]; cmd=substr(line, length(schedule)+length(user)+4); print user,schedule,cmd,source}'`,
+        `for f in /etc/cron.d/*; do [ -f "$f" ] || continue; awk -v src="$f" '/^[ \t]*#/ {next} /^[ \t]*$/ {next} /^[ \t]*[A-Za-z_][A-Za-z0-9_]*=/ {next} {if ($1 ~ /^@/) { sched=$1; u=$2; if (match($0, /^([ \t]*[^ \t]+){2}[ \t]+/)) { cmd=substr($0, RLENGTH+1); gsub(/^[ \t]+|[ \t]+$/, "", cmd); print u"\t"sched"\t"cmd"\t"src; } } else if (NF>=7) { sched=$1" "$2" "$3" "$4" "$5; u=$6; if (match($0, /^([ \t]*[^ \t]+){6}[ \t]+/)) { cmd=substr($0, RLENGTH+1); gsub(/^[ \t]+|[ \t]+$/, "", cmd); print u"\t"sched"\t"cmd"\t"src; } } }' "$f" 2>/dev/null; done`,
 
-        // 4. /etc/cron.hourly
-        `ls /etc/cron.hourly/ 2>/dev/null | awk 'BEGIN{OFS=","} {print "root","@hourly",$0,"/etc/cron.hourly/"$0}'`,
-
-        // 5. /etc/cron.daily
-        `ls /etc/cron.daily/ 2>/dev/null | awk 'BEGIN{OFS=","} {print "root","@daily",$0,"/etc/cron.daily/"$0}'`,
-
-        // 6. /etc/cron.weekly
-        `ls /etc/cron.weekly/ 2>/dev/null | awk 'BEGIN{OFS=","} {print "root","@weekly",$0,"/etc/cron.weekly/"$0}'`,
-
-        // 7. /etc/cron.monthly
-        `ls /etc/cron.monthly/ 2>/dev/null | awk 'BEGIN{OFS=","} {print "root","@monthly",$0,"/etc/cron.monthly/"$0}'`
+        // 4. /etc/cron.hourly, daily, weekly, monthly
+        `for dir in hourly daily weekly monthly; do for f in /etc/cron.$dir/*; do if [ -f "$f" ] && [ -x "$f" ]; then base=$(basename "$f"); case "$base" in .*|*.dpkg-dist|*.dpkg-old|*.dpkg-new|*.ucf-old|*.ucf-dist) continue ;; esac; printf "root\t@%s\t%s\t/etc/cron.%s/%s\n" "$dir" "$f" "$dir" "$base"; fi; done 2>/dev/null; done`
       ];
 
-      // 将所有命令组合成一个，用 ; 分隔
       const combinedCommand = commands.join(' ; ');
       const result = await this.executeCommand(combinedCommand);
 
@@ -980,26 +1063,50 @@ export class SystemInfoManager {
   /**
    * 解析计划任务
    */
-  private parseCronJobs(data: string): Array<{ user: string; schedule: string; command: string; source: string }> {
-    if (!data.trim()) return [];
+  public parseCronJobs(data: string): Array<{ user: string; schedule: string; command: string; source: string }> {
+    if (!data || !data.trim()) return [];
 
     return data.trim().split('\n').map(line => {
-      // 简单的逗号分割可能会破坏包含逗号的命令，但这是目前系统的实现方式
-      // 我们尝试倒序解析以获取source，或者假设最后一部分是source
-      // 但为了保持兼容性，我们先按逗号分割
-      const parts = line.split(',');
-      
-      // 如果parts长度大于4，说明command中包含逗号
-      // 重新组合command: parts[2] 到 parts[length-2]
-      let user = parts[0] || 'root';
-      let schedule = parts[1] || '';
-      let source = parts[parts.length - 1] || '';
-      let command = '';
+      const cleanLine = line.replace(/\r$/, '').trim();
+      if (!cleanLine) return null;
 
-      if (parts.length > 4) {
-        command = parts.slice(2, parts.length - 1).join(',');
+      let user = 'root';
+      let schedule = '';
+      let command = '';
+      let source = '';
+
+      // 1. 首选 TAB 分隔符格式
+      if (cleanLine.includes('\t')) {
+        const parts = cleanLine.split('\t');
+        if (parts.length >= 3) {
+          user = parts[0]?.trim() || 'root';
+          schedule = parts[1]?.trim() || '';
+          command = parts[2]?.trim() || '';
+          source = parts[3]?.trim() || '';
+        }
       } else {
-        command = parts[2] || '';
+        // 2. 兜底处理逗号分隔格式（向后兼容旧文本或简单输出）
+        const parts = cleanLine.split(',');
+        if (parts.length >= 3) {
+          user = parts[0]?.trim() || 'root';
+          schedule = parts[1]?.trim() || '';
+          if (parts.length >= 4) {
+            source = parts[parts.length - 1]?.trim() || '';
+            command = parts.slice(2, parts.length - 1).join(',').trim();
+          } else {
+            command = parts[2]?.trim() || '';
+          }
+        }
+      }
+
+      // 清理 dash/sh 环境下 echo -e 残留的 -e 前缀
+      if (user.startsWith('-e ')) {
+        user = user.replace(/^-e\s+/, '');
+      }
+
+      // 修复被连缀变成逗号的命令（例如 "cd,/,&&,run-parts..." 自愈修复）
+      if (command.includes(',') && !command.includes(' ')) {
+        command = command.replace(/,/g, ' ');
       }
 
       return {
@@ -1008,7 +1115,9 @@ export class SystemInfoManager {
         command,
         source
       };
-    }).filter(c => c.schedule);
+    }).filter((c): c is { user: string; schedule: string; command: string; source: string } => 
+      c !== null && Boolean(c.schedule) && Boolean(c.command)
+    );
   }
 
   /**
@@ -1173,11 +1282,12 @@ export class SystemInfoManager {
   /** 采集 sudoers 配置 */
   private async getSudoersConfig(): Promise<string> {
     return this.executeCommand(
-      `{ cat /etc/sudoers 2>/dev/null; find /etc/sudoers.d -type f -exec cat {} \\; 2>/dev/null; } | grep -vE '^(#|$|Defaults)' | awk '{
+      `{ cat /etc/sudoers 2>/dev/null; find /etc/sudoers.d -type f -exec cat {} \\; 2>/dev/null; } | grep -vE '^[[:space:]]*(#|$|Defaults|@include|@includedir|#include|#includedir)' | awk '{
         src="/etc/sudoers";
         line=$0;
         if(line ~ /NOPASSWD/) nopasswd="YES"; else nopasswd="NO";
         user=$1;
+        if(user ~ /^(@include|@includedir|#include|#includedir|Defaults)/) next;
         # extract host, runas, command
         split(line, parts, "=");
         if(length(parts)>=2) {
@@ -1194,11 +1304,7 @@ export class SystemInfoManager {
   /** 采集 systemd timers */
   private async getSystemdTimers(): Promise<string> {
     return this.executeCommand(
-      `systemctl list-timers --all --no-pager --no-legend 2>/dev/null | head -100 | awk 'BEGIN{OFS=","} {
-        next_=$1" "$2" "$3; left=$4" "$5; last=$6" "$7" "$8; passed=$9; unit=$10; activates=$11;
-        if(unit=="") { unit=$1; activates=$2; next_="-"; left="-"; last="-"; }
-        print unit,next_,left,last,activates
-      }'`
+      `systemctl list-timers --all --no-pager --no-legend 2>/dev/null | head -100`
     );
   }
 
@@ -1332,34 +1438,167 @@ export class SystemInfoManager {
     }).filter(p => p.name && p.name !== 'unknown');
   }
 
-  private parseSudoersConfig(data: string): Array<{ user: string; host: string; runas: string; command: string; nopasswd: string; source: string }> {
+  public parseSudoersConfig(data: string): Array<{ user: string; host: string; runas: string; command: string; nopasswd: string; source: string }> {
     if (!data || !data.trim()) return [];
+    const EXCLUDED_USER_PREFIXES = ['#', 'Defaults', '@include', '@includedir', '#include', '#includedir'];
     return data.trim().split('\n').filter(l => l.includes(',')).map(line => {
       const parts = line.split(',');
       return {
-        user: parts[0] || '',
-        host: parts[1] || 'ALL',
-        runas: parts[2] || 'ALL',
-        command: parts[3] || '',
-        nopasswd: parts[4] || 'NO',
-        source: parts[5] || '/etc/sudoers'
+        user: (parts[0] || '').trim(),
+        host: (parts[1] || 'ALL').trim(),
+        runas: (parts[2] || 'ALL').trim(),
+        command: (parts[3] || '').trim(),
+        nopasswd: (parts[4] || 'NO').trim(),
+        source: (parts[5] || '/etc/sudoers').trim()
       };
-    }).filter(s => s.user && !s.user.startsWith('#'));
+    }).filter(s => s.user && !EXCLUDED_USER_PREFIXES.some(prefix => s.user.toLowerCase().startsWith(prefix.toLowerCase())));
   }
 
-  private parseSystemdTimers(data: string): Array<{ timer: string; next: string; left: string; last: string; unit: string; activates: string }> {
+  public parseSystemdTimers(data: string): Array<{ timer: string; next: string; left: string; last: string; unit: string; activates: string }> {
     if (!data || !data.trim()) return [];
-    return data.trim().split('\n').filter(l => l.includes(',')).map(line => {
-      const parts = line.split(',');
-      return {
-        timer: parts[0] || '',
-        next: parts[1] || '-',
-        left: parts[2] || '-',
-        last: parts[3] || '-',
-        unit: parts[0] || '',
-        activates: parts[4] || ''
-      };
-    }).filter(t => t.timer);
+
+    const isDayOfWeek = (s: string) => /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)$/i.test(s);
+    const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+    const isTime = (s: string) => /^\d{2}:\d{2}:\d{2}$/.test(s);
+    const isTimezone = (s: string) => /^[A-Z]{2,5}$|^[+-]\d{2,4}$/.test(s);
+
+    const results: Array<{ timer: string; next: string; left: string; last: string; unit: string; activates: string }> = [];
+
+    const lines = data.trim().split('\n');
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      // 兼容逗号分隔旧格式
+      if (line.includes(',') && !line.includes(' left') && !line.includes(' ago') && !isDate(line.split(',')[0])) {
+        const parts = line.split(',');
+        if (parts.length >= 5) {
+          results.push({
+            timer: (parts[0] || '').trim(),
+            next: (parts[1] || '-').trim(),
+            left: (parts[2] || '-').trim(),
+            last: (parts[3] || '-').trim(),
+            unit: (parts[0] || '').trim(),
+            activates: (parts[4] || '-').trim()
+          });
+          continue;
+        }
+      }
+
+      const tokens = line.split(/\s+/);
+      if (tokens.length < 2) continue;
+
+      let unit = '';
+      let activates = '';
+      let remTokens: string[] = [];
+
+      const lastToken = tokens[tokens.length - 1];
+      const secondLastToken = tokens[tokens.length - 2];
+
+      if (lastToken.endsWith('.timer')) {
+        unit = lastToken;
+        activates = '-';
+        remTokens = tokens.slice(0, tokens.length - 1);
+      } else {
+        activates = lastToken;
+        unit = secondLastToken;
+        remTokens = tokens.slice(0, tokens.length - 2);
+      }
+
+      let nextStr = '-';
+      let leftStr = '-';
+      let lastStr = '-';
+
+      // 寻找所有包含 YYYY-MM-DD 日期的索引
+      const dateIndices: number[] = [];
+      for (let i = 0; i < remTokens.length; i++) {
+        if (isDate(remTokens[i])) {
+          dateIndices.push(i);
+        }
+      }
+
+      if (dateIndices.length === 2) {
+        const d1 = dateIndices[0];
+        const d2 = dateIndices[1];
+
+        // 1. NEXT [nextStart, nextEnd]
+        const nextStart = (d1 > 0 && isDayOfWeek(remTokens[d1 - 1])) ? d1 - 1 : d1;
+        let nextEnd = d1;
+        if (d1 + 1 < d2 && isTime(remTokens[d1 + 1])) {
+          nextEnd = (d1 + 2 < d2 && isTimezone(remTokens[d1 + 2])) ? d1 + 2 : d1 + 1;
+        }
+        nextStr = remTokens.slice(nextStart, nextEnd + 1).join(' ');
+
+        // 2. LAST [lastStart, lastEnd]
+        const lastStart = (d2 > nextEnd + 1 && isDayOfWeek(remTokens[d2 - 1])) ? d2 - 1 : d2;
+        let lastEnd = d2;
+        if (d2 + 1 < remTokens.length && isTime(remTokens[d2 + 1])) {
+          lastEnd = (d2 + 2 < remTokens.length && isTimezone(remTokens[d2 + 2])) ? d2 + 2 : d2 + 1;
+        }
+        lastStr = remTokens.slice(lastStart, lastEnd + 1).join(' ');
+
+        // 3. LEFT (nextEnd + 1 ~ lastStart - 1)
+        leftStr = remTokens.slice(nextEnd + 1, lastStart).join(' ') || '-';
+      } else if (dateIndices.length === 1) {
+        const d = dateIndices[0];
+        const hasLeadingNA = remTokens.slice(0, d).some(t => t === 'n/a');
+
+        if (hasLeadingNA) {
+          // NEXT 是 n/a，此日期为 LAST
+          nextStr = 'n/a';
+          const lastStart = (d > 0 && isDayOfWeek(remTokens[d - 1])) ? d - 1 : d;
+          leftStr = remTokens.slice(0, lastStart).filter(t => t !== 'n/a').join(' ') || 'n/a';
+
+          let lastEnd = d;
+          if (d + 1 < remTokens.length && isTime(remTokens[d + 1])) {
+            lastEnd = (d + 2 < remTokens.length && isTimezone(remTokens[d + 2])) ? d + 2 : d + 1;
+          }
+          lastStr = remTokens.slice(lastStart, lastEnd + 1).join(' ');
+        } else {
+          // 此日期为 NEXT，LAST 是 n/a
+          const nextStart = (d > 0 && isDayOfWeek(remTokens[d - 1])) ? d - 1 : d;
+          let nextEnd = d;
+          if (d + 1 < remTokens.length && isTime(remTokens[d + 1])) {
+            nextEnd = (d + 2 < remTokens.length && isTimezone(remTokens[d + 2])) ? d + 2 : d + 1;
+          }
+          nextStr = remTokens.slice(nextStart, nextEnd + 1).join(' ');
+
+          const trailingTokens = remTokens.slice(nextEnd + 1).filter(t => t !== 'n/a');
+          leftStr = trailingTokens.join(' ') || '-';
+          lastStr = 'n/a';
+        }
+      } else {
+        // 没有识别到日期
+        if (remTokens.length > 0) {
+          if (remTokens.every(t => t === 'n/a')) {
+            nextStr = 'n/a';
+            leftStr = 'n/a';
+            lastStr = 'n/a';
+          } else {
+            const leftIdx = remTokens.indexOf('left');
+            if (leftIdx !== -1) {
+              nextStr = remTokens.slice(0, leftIdx).filter(t => t !== 'n/a').join(' ') || 'n/a';
+              leftStr = remTokens.slice(leftIdx).join(' ');
+            } else {
+              nextStr = remTokens.join(' ');
+            }
+          }
+        }
+      }
+
+      if (unit) {
+        results.push({
+          timer: unit,
+          next: nextStr,
+          left: leftStr,
+          last: lastStr,
+          unit: unit,
+          activates: activates
+        });
+      }
+    }
+
+    return results;
   }
 
   private parseKernelModules(data: string): Array<{ name: string; size: string; usedBy: string; risk: string }> {
