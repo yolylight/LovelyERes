@@ -343,6 +343,12 @@ enum WorkerCommand {
         commands: Vec<String>,
         response_tx: mpsc::Sender<Result<Vec<Result<TerminalOutput, String>>, String>>,
     },
+    DownloadSftpFile {
+        session_id: String,
+        remote_path: String,
+        local_path: String,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
     Shutdown,
 }
 
@@ -771,6 +777,58 @@ async fn read_sftp_file_async(
     Ok(content)
 }
 
+/// Download file from remote to local via SFTP with streaming (chunked read/write)
+/// This avoids loading the entire file into memory and supports large files.
+async fn download_sftp_file_async(
+    handle: &Handle<ClientHandler>,
+    remote_path: &str,
+    local_path: &str,
+) -> Result<(), String> {
+    let channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open channel: {}", e))?;
+    
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| format!("Failed to request SFTP subsystem: {}", e))?;
+    
+    let sftp = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("Failed to create SFTP session: {}", e))?;
+    
+    let mut remote_file = sftp
+        .open(remote_path)
+        .await
+        .map_err(|e| format!("Failed to open remote file: {}", e))?;
+    
+    // Create local file
+    let mut local_file = tokio::fs::File::create(local_path)
+        .await
+        .map_err(|e| format!("Failed to create local file: {}", e))?;
+    
+    // Stream data in chunks (256KB per chunk)
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = remote_file.read(&mut buf)
+            .await
+            .map_err(|e| format!("Failed to read remote file: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        local_file.write_all(&buf[..n])
+            .await
+            .map_err(|e| format!("Failed to write local file: {}", e))?;
+    }
+    
+    local_file.flush()
+        .await
+        .map_err(|e| format!("Failed to flush local file: {}", e))?;
+    
+    Ok(())
+}
+
 async fn write_sftp_file_async(
     handle: &Handle<ClientHandler>,
     path: &str,
@@ -1007,6 +1065,18 @@ fn run_worker(rx: mpsc::Receiver<WorkerCommand>) {
                         let handle = Arc::clone(&session.handle);
                         tokio::spawn(async move {
                             let result = read_sftp_file_async(&handle, &path).await;
+                            let _ = response_tx.send(result);
+                        });
+                    } else {
+                        let _ = response_tx.send(Err(format!("Session not found: {}", session_id)));
+                    }
+                }
+
+                WorkerCommand::DownloadSftpFile { session_id, remote_path, local_path, response_tx } => {
+                    if let Some(session) = sessions.get(&session_id) {
+                        let handle = Arc::clone(&session.handle);
+                        tokio::spawn(async move {
+                            let result = download_sftp_file_async(&handle, &remote_path, &local_path).await;
                             let _ = response_tx.send(result);
                         });
                     } else {
@@ -2414,16 +2484,22 @@ echo "PATH=$PATH""#;
         self.write_sftp_file(remote_path, &content)
     }
     
-    /// Download file from remote to local
+    /// Download file from remote to local (streaming, supports large files)
     pub fn download_file(&self, remote_path: &str, local_path: &str) -> Result<(), String> {
-        // Read from remote via SFTP
-        let content = self.read_sftp_file(remote_path)?;
+        let session_id = self.get_current_session()?;
+        let (response_tx, response_rx) = mpsc::channel();
         
-        // Write to local file
-        std::fs::write(local_path, &content)
-            .map_err(|e| format!("Failed to write local file: {}", e))?;
+        self.send_to_worker(WorkerCommand::DownloadSftpFile {
+            session_id,
+            remote_path: remote_path.to_string(),
+            local_path: local_path.to_string(),
+            response_tx,
+        })?;
         
-        Ok(())
+        // 大文件下载超时设为 30 分钟
+        response_rx
+            .recv_timeout(std::time::Duration::from_secs(1800))
+            .map_err(|_| "下载超时（30 分钟）".to_string())?
     }
     
     /// Create directory (alias for create_sftp_directory for backward compatibility)

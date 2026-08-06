@@ -179,6 +179,205 @@ export function initSftpDetailPanel(): void {
     invoke('sftp_download', { remotePath: currentFile.path }).catch(() => {});
     w.showNotification?.('开始下载…', 'info');
   };
+
+  // 侧栏拖拽调整宽度
+  initSideResize();
+  // 表格列拖拽调整宽度
+  initColumnResize();
+}
+
+/** 各列对应的最小宽度 */
+const MIN_COL_WIDTHS: Record<string, number> = {
+  check: 34,
+  name: 120,
+  type: 55,
+  size: 65,
+  perms: 80,
+  owner: 80,
+  time: 100,
+  risk: 60,
+};
+
+let isColumnResizeInitialized = false;
+
+/** 初始化 SFTP 表格列拖拽调整宽度（使用全局事件委托，不受 DOM 重新渲染影响） */
+function initColumnResize(): void {
+  if (isColumnResizeInitialized) return;
+  isColumnResizeInitialized = true;
+
+  // 1. 全局 document mousedown 事件委托
+  document.addEventListener('mousedown', (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    const resizer = target?.closest('.sftp-th-resizer') as HTMLElement | null;
+    if (!resizer) return;
+
+    const table = resizer.closest('table') as HTMLTableElement | null;
+    if (!table) return;
+
+    const colName = resizer.getAttribute('data-col');
+    if (!colName) return;
+
+    // 关键：阻止默认行为和冒泡，防止触发 th 元素的 onclick 排序
+    e.preventDefault();
+    e.stopPropagation();
+
+    const thElem = resizer.closest('th') as HTMLTableCellElement | null;
+    const colElem = table.querySelector<HTMLTableColElement>(`col[data-col="${colName}"]`);
+
+    const startX = e.clientX;
+    const startWidth = thElem?.getBoundingClientRect().width || colElem?.offsetWidth || 100;
+
+    resizer.classList.add('resizing');
+    document.body.classList.add('sftp-col-resizing');
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      moveEvent.preventDefault();
+      const delta = moveEvent.clientX - startX;
+      const minW = MIN_COL_WIDTHS[colName] || 50;
+      const newWidth = Math.max(minW, Math.round(startWidth + delta));
+
+      // 同时更新 col 元素与 th 元素的 style.width，确保按像素实时精准变宽
+      if (colElem) colElem.style.width = `${newWidth}px`;
+      if (thElem) thElem.style.width = `${newWidth}px`;
+    };
+
+    const onMouseUp = () => {
+      resizer.classList.remove('resizing');
+      document.body.classList.remove('sftp-col-resizing');
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+
+      // 持久化列宽设置
+      saveColumnWidths(table);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  });
+
+  // 2. 页面载入或表格 DOM 挂载时恢复保存的列宽
+  const restoreIfTableExists = () => {
+    const table = document.getElementById('sftp-file-table');
+    if (table) {
+      restoreColumnWidths(table);
+    }
+  };
+
+  restoreIfTableExists();
+
+  // 3. 监听 DOM 树变化，在 SFTP 表格重新渲染后自动恢复列宽
+  const observer = new MutationObserver(() => {
+    const table = document.getElementById('sftp-file-table');
+    if (table && !table.hasAttribute('data-widths-restored')) {
+      table.setAttribute('data-widths-restored', 'true');
+      restoreColumnWidths(table);
+    }
+  });
+  try {
+    observer.observe(document.body, { childList: true, subtree: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 保存列宽配置到 localStorage */
+function saveColumnWidths(table: HTMLElement): void {
+  try {
+    const cols = table.querySelectorAll<HTMLTableColElement>('col[data-col]');
+    const widths: Record<string, string> = {};
+    cols.forEach((col) => {
+      const colName = col.getAttribute('data-col');
+      if (colName && col.style.width) {
+        widths[colName] = col.style.width;
+      }
+    });
+    localStorage.setItem('sftp-col-widths', JSON.stringify(widths));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 从 localStorage 恢复列宽配置 */
+function restoreColumnWidths(table: HTMLElement): void {
+  try {
+    const saved = localStorage.getItem('sftp-col-widths');
+    if (!saved) return;
+    const widths = JSON.parse(saved) as Record<string, string>;
+    Object.entries(widths).forEach(([colName, widthStr]) => {
+      const col = table.querySelector<HTMLTableColElement>(`col[data-col="${colName}"]`);
+      const th = table.querySelector<HTMLTableCellElement>(`th.sftp-col-${colName}`);
+      if (col && widthStr) {
+        col.style.width = widthStr;
+      }
+      if (th && widthStr) {
+        th.style.width = widthStr;
+      }
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 初始化侧栏拖拽调整宽度 */
+function initSideResize(): void {
+  // 延迟绑定，因为DOM可能还未渲染
+  const bind = () => {
+    const handle = document.getElementById('sftp-side-resize');
+    const side = document.getElementById('sftp-side');
+    if (!handle || !side) return;
+
+    let startX = 0;
+    let startWidth = 0;
+    let dragging = false;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (side.classList.contains('collapsed')) return;
+      e.preventDefault();
+      dragging = true;
+      startX = e.clientX;
+      startWidth = side.offsetWidth;
+      side.style.transition = 'none'; // 拖拽时禁用过渡动画
+      handle.classList.add('active');
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragging) return;
+      // 向左拖 = clientX 减小 = 侧栏变宽（因为侧栏在右侧）
+      const delta = startX - e.clientX;
+      const newWidth = Math.max(240, Math.min(600, startWidth + delta));
+      side.style.width = `${newWidth}px`;
+    };
+
+    const onMouseUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      side.style.transition = '';
+      handle.classList.remove('active');
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      // 记住用户选择的宽度
+      try { localStorage.setItem('sftp-side-width', side.style.width); } catch { /* ignore */ }
+    };
+
+    handle.addEventListener('mousedown', onMouseDown);
+
+    // 恢复上次保存的宽度
+    try {
+      const saved = localStorage.getItem('sftp-side-width');
+      if (saved && !side.classList.contains('collapsed')) {
+        side.style.width = saved;
+      }
+    } catch { /* ignore */ }
+  };
+
+  // 尝试立即绑定，若DOM未就绪则延迟
+  if (document.getElementById('sftp-side-resize')) {
+    bind();
+  } else {
+    setTimeout(bind, 300);
+  }
 }
 
 initSftpDetailPanel();

@@ -1215,17 +1215,48 @@ export class ModernUIRenderer {
         <!-- Body: 文件表格 + 文件详情侧栏 -->
         <div class="sftp-body">
           <div class="sftp-file-list-container">
-            <table class="sftp-table">
+            <table class="sftp-table" id="sftp-file-table">
+              <colgroup>
+                <col data-col="check" style="width: 38px;">
+                <col data-col="name" style="width: 260px;">
+                <col data-col="type" style="width: 75px;">
+                <col data-col="size" style="width: 90px;">
+                <col data-col="perms" style="width: 110px;">
+                <col data-col="owner" style="width: 110px;">
+                <col data-col="time" style="width: 150px;">
+                <col data-col="risk" style="width: 80px;">
+              </colgroup>
               <thead>
                 <tr>
                   <th class="sftp-col-check"><input type="checkbox" id="sftp-check-all" onclick="window.sftpToggleAll && window.sftpToggleAll(this.checked)"></th>
-                  <th class="sftp-th-sortable sftp-col-name" onclick="window.setSftpSortMode(sftpManager.getSortMode() === 'name-asc' ? 'name-desc' : 'name-asc')" id="sftp-th-name">名称 <span class="sort-indicator" id="sort-ind-name">▲</span></th>
-                  <th class="sftp-col-type">类型</th>
-                  <th class="sftp-th-sortable sftp-col-size" onclick="window.setSftpSortMode(sftpManager.getSortMode() === 'size-asc' ? 'size-desc' : 'size-asc')" id="sftp-th-size">大小 <span class="sort-indicator" id="sort-ind-size"></span></th>
-                  <th class="sftp-col-perms">权限</th>
-                  <th class="sftp-col-owner">所有者</th>
-                  <th class="sftp-th-sortable sftp-col-time" onclick="window.setSftpSortMode(sftpManager.getSortMode() === 'modified-asc' ? 'modified-desc' : 'modified-asc')" id="sftp-th-modified">修改时间 <span class="sort-indicator" id="sort-ind-modified"></span></th>
-                  <th class="sftp-col-risk">风险</th>
+                  <th class="sftp-th-sortable sftp-col-name" onclick="window.setSftpSortMode(sftpManager.getSortMode() === 'name-asc' ? 'name-desc' : 'name-asc')" id="sftp-th-name">
+                    <span class="sftp-th-text">名称 <span class="sort-indicator" id="sort-ind-name">▲</span></span>
+                    <div class="sftp-th-resizer" data-col="name"></div>
+                  </th>
+                  <th class="sftp-col-type">
+                    <span class="sftp-th-text">类型</span>
+                    <div class="sftp-th-resizer" data-col="type"></div>
+                  </th>
+                  <th class="sftp-th-sortable sftp-col-size" onclick="window.setSftpSortMode(sftpManager.getSortMode() === 'size-asc' ? 'size-desc' : 'size-asc')" id="sftp-th-size">
+                    <span class="sftp-th-text">大小 <span class="sort-indicator" id="sort-ind-size"></span></span>
+                    <div class="sftp-th-resizer" data-col="size"></div>
+                  </th>
+                  <th class="sftp-col-perms">
+                    <span class="sftp-th-text">权限</span>
+                    <div class="sftp-th-resizer" data-col="perms"></div>
+                  </th>
+                  <th class="sftp-col-owner">
+                    <span class="sftp-th-text">所有者</span>
+                    <div class="sftp-th-resizer" data-col="owner"></div>
+                  </th>
+                  <th class="sftp-th-sortable sftp-col-time" onclick="window.setSftpSortMode(sftpManager.getSortMode() === 'modified-asc' ? 'modified-desc' : 'modified-asc')" id="sftp-th-modified">
+                    <span class="sftp-th-text">修改时间 <span class="sort-indicator" id="sort-ind-modified"></span></span>
+                    <div class="sftp-th-resizer" data-col="time"></div>
+                  </th>
+                  <th class="sftp-col-risk">
+                    <span class="sftp-th-text">风险</span>
+                    <div class="sftp-th-resizer" data-col="risk"></div>
+                  </th>
                 </tr>
               </thead>
               <tbody id="sftp-file-list">
@@ -1242,6 +1273,7 @@ export class ModernUIRenderer {
           </div>
 
           <aside class="sftp-side${sideCollapsed ? ' collapsed' : ''}" id="sftp-side">
+            <div class="sftp-side-resize" id="sftp-side-resize"></div>
             <div class="sftp-side-head">
               <span class="sftp-side-title">文件详情</span>
               <button class="sftp-side-toggle" onclick="window.toggleSftpSide && window.toggleSftpSide()" title="收起 / 展开">
