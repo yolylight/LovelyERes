@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use serde::{Deserialize, Serialize};
 use russh::client::{Config, Handle, Handler};
-use russh::keys::{PublicKey, PrivateKeyWithHashAlg};
+use russh::keys::{PublicKey, PrivateKeyWithHashAlg, HashAlg};
 use russh::{ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -377,6 +377,53 @@ struct TerminalSession {
 
 // ================== Async Helper Functions ==================
 
+/// 根据 RFC 8332 和 RFC 8308 扩展协商结果，计算 RSA 公钥认证候选哈希算法列表
+///
+/// RFC 8332 定义了在 SSH 协议中使用 SHA-256 和 SHA-512 的 RSA 数字签名算法：
+/// - "rsa-sha2-256" (对应 HashAlg::Sha256)
+/// - "rsa-sha2-512" (对应 HashAlg::Sha512)
+/// 替代已废弃且易受碰撞攻击的 SHA-1 "ssh-rsa" (对应 None)
+///
+/// 协商结果 `negotiation_result` 为 `best_supported_rsa_hash()` 的返回值：
+/// - `Some(Some(hash))`: 服务端通过 server-sig-algs 扩展明确通告支持该哈希算法
+/// - `Some(None)`: 服务端发送了扩展信息，但未通告任何 SHA-2 算法（说明服务端仅支持传统 ssh-rsa）
+/// - `None`: 服务端未发送扩展信息或协商未完成，按 RFC 8332 规范优先尝试 Sha256/Sha512，再回退到旧版 ssh-rsa
+pub fn resolve_rsa_hash_candidates(
+    negotiation_result: Option<Option<HashAlg>>,
+) -> Vec<Option<HashAlg>> {
+    match negotiation_result {
+        Some(Some(hash)) => {
+            // 服务端明确通告支持 hash，优先使用；如果意外失败则尝试另一种 SHA-2，最后回退到 None
+            let mut candidates = vec![Some(hash)];
+            if hash == HashAlg::Sha512 {
+                candidates.push(Some(HashAlg::Sha256));
+            } else {
+                candidates.push(Some(HashAlg::Sha512));
+            }
+            candidates.push(None);
+            candidates
+        }
+        Some(None) => {
+            // 服务端发送了扩展信息，但明确未列出 rsa-sha2 算法，优先使用旧版 ssh-rsa (SHA-1)
+            vec![
+                None,
+                Some(HashAlg::Sha256),
+                Some(HashAlg::Sha512),
+            ]
+        }
+        None => {
+            // 服务端未通告扩展信息（或协商未完成），依据 RFC 8332 Section 3 推荐标准：
+            // 优先尝试 rsa-sha2-256 (RFC 8332 规定支持 RFC 8332 的服务端必须实现此算法)，
+            // 其次尝试 rsa-sha2-512，最后回退到传统 ssh-rsa (SHA-1)
+            vec![
+                Some(HashAlg::Sha256),
+                Some(HashAlg::Sha512),
+                None,
+            ]
+        }
+    }
+}
+
 async fn connect_async(
     host: &str,
     port: u16,
@@ -432,14 +479,14 @@ async fn connect_async(
     })?;
     
     // Authenticate with timeout
-    let auth_result = if let Some(key_str) = private_key {
+    if let Some(key_str) = private_key {
         // Try key authentication
         let key_pair = if key_str.contains("OPENSSH PRIVATE KEY") || key_str.contains("RSA PRIVATE KEY") || key_str.contains("-----BEGIN") {
-            russh_keys::decode_secret_key(key_str, None)
+            russh_keys::decode_secret_key(key_str, password)
                 .map_err(|e| format!("Failed to decode private key: {}", e))?
         } else {
             // Assume it's a file path
-            russh_keys::load_secret_key(key_str, None)
+            russh_keys::load_secret_key(key_str, password)
                 .map_err(|e| format!("Failed to load private key: {}", e))?
         };
         
@@ -449,33 +496,89 @@ async fn connect_async(
         let russh_key = russh::keys::decode_secret_key(&key_bytes, None)
             .map_err(|e| format!("Failed to decode key for russh: {}", e))?;
         
-        // Wrap key with hash algorithm for authentication
-        let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(russh_key), None);
-        
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            handle.authenticate_publickey(username, key_with_hash)
-        )
-        .await
-        .map_err(|_| "Key authentication timed out (10s)".to_string())?
-        .map_err(|e| format!("Key authentication failed: {}", e))?
+        let is_rsa = matches!(russh_key.algorithm(), russh::keys::Algorithm::Rsa { .. });
+
+        if is_rsa {
+            // RFC 8332: RSA 密钥支持使用 SHA-256 和 SHA-512 签名
+            // 现代 OpenSSH (8.8+) 默认禁用 SHA-1 的 ssh-rsa，要求使用 rsa-sha2-256 或 rsa-sha2-512。
+            let negotiated = handle.best_supported_rsa_hash().await.ok().flatten();
+            let candidates = resolve_rsa_hash_candidates(negotiated);
+
+            let mut authenticated = false;
+            let mut last_error = None;
+
+            for hash_alg in candidates {
+                let alg_name = match hash_alg {
+                    Some(HashAlg::Sha512) => "rsa-sha2-512",
+                    Some(HashAlg::Sha256) => "rsa-sha2-256",
+                    Some(_) => "rsa-sha2",
+                    None => "ssh-rsa (SHA-1)",
+                };
+
+                let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(russh_key.clone()), hash_alg);
+                let auth_res = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    handle.authenticate_publickey(username, key_with_hash)
+                ).await;
+
+                match auth_res {
+                    Ok(Ok(result)) => {
+                        if result.success() {
+                            #[cfg(debug_assertions)]
+                            println!("✅ RSA 密钥认证成功，采用算法: {}", alg_name);
+                            authenticated = true;
+                            break;
+                        } else {
+                            #[cfg(debug_assertions)]
+                            println!("⚠️ RSA 密钥认证未成功 (算法: {})，尝试备选算法...", alg_name);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        let err_str = e.to_string();
+                        #[cfg(debug_assertions)]
+                        println!("⚠️ RSA 密钥认证返回错误 (算法: {}): {}，尝试备选算法...", alg_name, err_str);
+                        last_error = Some(format!("算法 {} 认证错误: {}", alg_name, err_str));
+                    }
+                    Err(_) => {
+                        return Err(format!("RSA 密钥认证超时 (10秒，算法: {})", alg_name));
+                    }
+                }
+            }
+
+            if !authenticated {
+                return Err(last_error.unwrap_or_else(|| "RSA 密钥认证失败：服务端拒绝了所提供的密钥或所有候选算法".to_string()));
+            }
+        } else {
+            // 非 RSA 密钥（如 Ed25519、ECDSA），直接使用默认认证
+            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(russh_key), None);
+            let auth_result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                handle.authenticate_publickey(username, key_with_hash)
+            )
+            .await
+            .map_err(|_| "Key authentication timed out (10s)".to_string())?
+            .map_err(|e| format!("Key authentication failed: {}", e))?;
+
+            if !auth_result.success() {
+                return Err("Authentication failed".to_string());
+            }
+        }
     } else if let Some(pwd) = password {
         // Password authentication
-        tokio::time::timeout(
+        let auth_result = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             handle.authenticate_password(username, pwd)
         )
         .await
         .map_err(|_| "Password authentication timed out (10s)".to_string())?
-        .map_err(|e| format!("Password authentication failed: {}", e))?
+        .map_err(|e| format!("Password authentication failed: {}", e))?;
+
+        if !auth_result.success() {
+            return Err("Authentication failed".to_string());
+        }
     } else {
         return Err("No authentication method provided".to_string());
     };
-    
-    // Check authentication result
-    if !auth_result.success() {
-        return Err("Authentication failed".to_string());
-    }
     
     Ok(handle)
 }
@@ -2576,3 +2679,42 @@ impl Drop for SSHManagerRussh {
         let _ = self.send_to_worker(WorkerCommand::Shutdown);
     }
 }
+
+#[cfg(test)]
+mod rfc8332_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_candidates_with_sha512() {
+        let candidates = resolve_rsa_hash_candidates(Some(Some(HashAlg::Sha512)));
+        assert_eq!(candidates, vec![Some(HashAlg::Sha512), Some(HashAlg::Sha256), None]);
+    }
+
+    #[test]
+    fn test_resolve_candidates_with_sha256() {
+        let candidates = resolve_rsa_hash_candidates(Some(Some(HashAlg::Sha256)));
+        assert_eq!(candidates, vec![Some(HashAlg::Sha256), Some(HashAlg::Sha512), None]);
+    }
+
+    #[test]
+    fn test_resolve_candidates_with_legacy_server() {
+        let candidates = resolve_rsa_hash_candidates(Some(None));
+        assert_eq!(candidates, vec![None, Some(HashAlg::Sha256), Some(HashAlg::Sha512)]);
+    }
+
+    #[test]
+    fn test_resolve_candidates_no_extension() {
+        let candidates = resolve_rsa_hash_candidates(None);
+        assert_eq!(candidates, vec![Some(HashAlg::Sha256), Some(HashAlg::Sha512), None]);
+    }
+
+    #[test]
+    fn test_default_config_includes_rfc8332_host_key_algorithms() {
+        let config = Config::default();
+        let keys = &config.preferred.key;
+        assert!(keys.iter().any(|k| matches!(k, russh::keys::Algorithm::Rsa { hash: Some(HashAlg::Sha512) })));
+        assert!(keys.iter().any(|k| matches!(k, russh::keys::Algorithm::Rsa { hash: Some(HashAlg::Sha256) })));
+    }
+}
+
+
