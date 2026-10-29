@@ -1924,9 +1924,13 @@ export class ModernUIRenderer {
                   <span id="settings-bb-path" style="font-size:11px;color:var(--text-secondary);font-family:monospace;"></span>
                 </div>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                  <button class="modern-btn primary" id="settings-bb-upload" style="padding:8px 16px;font-size:13px;"
+                  <button class="modern-btn primary" id="settings-bb-autodeploy" style="padding:8px 16px;font-size:13px;"
+                    onclick="window.__settingsBusyboxAutoDeploy?.()">
+                    一键部署内置 Busybox
+                  </button>
+                  <button class="modern-btn secondary" id="settings-bb-upload" style="padding:8px 16px;font-size:13px;"
                     onclick="window.__settingsBusyboxUpload?.()">
-                    上传本地 busybox
+                    手动上传本地文件
                   </button>
                   <button class="modern-btn secondary" id="settings-bb-enable" style="padding:8px 16px;font-size:13px;"
                     onclick="window.__settingsBusyboxEnable?.()">

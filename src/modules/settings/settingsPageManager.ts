@@ -1015,6 +1015,22 @@ export class SettingsPageManager {
       showLog(String(e));
     });
 
+    // 一键部署内置纯静态 Busybox
+    (window as any).__settingsBusyboxAutoDeploy = async () => {
+      if (statusEl) { statusEl.textContent = '状态: 正在配置内置纯静态 Busybox...'; statusEl.style.color = '#3b82f6'; }
+      try {
+        const deployedPath = await busyboxManager.autoDeploy();
+        if (statusEl) { statusEl.textContent = '状态: 已启用'; statusEl.style.color = '#22c55e'; }
+        if (pathEl) pathEl.textContent = deployedPath;
+        showLog(`内置纯静态 Busybox 部署成功并已激活: ${deployedPath}`);
+        window.showNotification?.(`内置 Busybox 已自动就绪 (${deployedPath})`, 'success');
+      } catch (e: any) {
+        showLog(String(e));
+        if (statusEl) { statusEl.textContent = '状态: 自动配置失败'; statusEl.style.color = '#ef4444'; }
+        window.showNotification?.(`自动配置失败: ${e?.message || e}`, 'error');
+      }
+    };
+
     // 上传按钮
     (window as any).__settingsBusyboxUpload = async () => {
       if (statusEl) statusEl.textContent = '状态: 上传中...';

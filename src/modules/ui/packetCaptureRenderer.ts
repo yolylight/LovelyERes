@@ -251,19 +251,49 @@ export class PacketCaptureRenderer {
 
     try {
       const result = await invoke('get_network_interfaces') as NetworkInterface[];
-      this.interfaces = Array.isArray(result) ? result : [];
-      if (this.interfaces.length > 0 && !this.selectedInterface) {
-        this.selectedInterface = this.interfaces[0].name;
+      const rawList = Array.isArray(result) ? result : [];
+      // 防御性过滤非法接口（如 shell 错误残留：bash:、sh:、包含 command not found 等）
+      this.interfaces = rawList.filter(iface => {
+        if (!iface || !iface.name) return false;
+        const name = iface.name.trim();
+        const lower = name.toLowerCase();
+        if (name.endsWith(':')) return false;
+        if (lower.startsWith('bash') || lower.startsWith('sh') || lower.includes('command not found') || lower.includes('not found')) {
+          return false;
+        }
+        return true;
+      });
+
+      // 兜底保障包含 any 虚拟抓包接口
+      if (!this.interfaces.some(i => i.name === 'any')) {
+        this.interfaces.unshift({
+          name: 'any',
+          index: 0,
+          ips: ['所有接口/全部流量']
+        });
+      }
+
+      if (this.interfaces.length > 0) {
+        if (!this.selectedInterface || !this.interfaces.some(i => i.name === this.selectedInterface)) {
+          this.selectedInterface = this.interfaces[0].name;
+        }
       }
     } catch (e) {
       console.error('Failed to load network interfaces:', e);
-      this.interfaces = [];
+      this.interfaces = [{
+        name: 'any',
+        index: 0,
+        ips: ['所有接口/全部流量']
+      }];
+      this.selectedInterface = 'any';
     }
 
     const interfaceOptions = this.interfaces
       .map(
-        iface =>
-          `<option value="${iface.name}" ${iface.name === this.selectedInterface ? 'selected' : ''}>${iface.name} (${iface.ips.join(', ')})</option>`
+        iface => {
+          const ipLabel = iface.ips && iface.ips.length > 0 ? ` (${iface.ips.join(', ')})` : '';
+          return `<option value="${iface.name}" ${iface.name === this.selectedInterface ? 'selected' : ''}>${iface.name}${ipLabel}</option>`;
+        }
       )
       .join('');
 

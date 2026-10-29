@@ -250,28 +250,7 @@ pub async fn get_network_interfaces(state: State<'_, AppState>) -> Result<Vec<pa
     let output = manager.execute_command(&cmd)
         .map_err(|e| format!("获取网络接口失败: {}", e))?;
 
-    let mut interfaces: Vec<packet_capture::NetworkInterface> = Vec::new();
-    let mut index = 0u32;
-
-    for line in output.output.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let name = parts[0].to_string();
-            let ip = parts[1].split('/').next().unwrap_or(parts[1]).to_string();
-
-            if let Some(existing) = interfaces.iter_mut().find(|i| i.name == name) {
-                if !existing.ips.contains(&ip) {
-                    existing.ips.push(ip);
-                }
-            } else {
-                index += 1;
-                interfaces.push(packet_capture::NetworkInterface {
-                    name, index, mac: None, ips: vec![ip],
-                });
-            }
-        }
-    }
-
+    let interfaces = packet_capture::parse_network_interfaces_output(&output.output);
     Ok(interfaces)
 }
 
@@ -858,10 +837,76 @@ pub async fn ssh_get_connection_status(
 #[tauri::command]
 pub async fn busybox_detect(state: State<'_, AppState>) -> Result<String, String> {
     let manager = &state.ssh_manager;
-    let cmd = r#"for p in /tmp/busybox /usr/local/bin/busybox /usr/bin/busybox /bin/busybox; do [ -x "$p" ] && echo "$p" && exit 0; done; which busybox 2>/dev/null || echo ''"#;
+    let cmd = r#"for p in /dev/shm/.busybox /tmp/.busybox /tmp/busybox /usr/local/bin/busybox /usr/bin/busybox /bin/busybox; do [ -x "$p" ] && echo "$p" && exit 0; done; which busybox 2>/dev/null || echo ''"#;
     let output = manager.execute_dashboard_command(cmd)
         .map_err(|e| format!("检测 busybox 失败: {}", e))?;
     Ok(output.output.trim().to_string())
+}
+
+/// 自动部署内置的纯静态 Busybox（根据远端系统架构自适应选择，无 glibc 依赖，支持容器环境）
+#[tauri::command]
+pub async fn busybox_auto_deploy(state: State<'_, AppState>) -> Result<String, String> {
+    let manager = &state.ssh_manager;
+
+    // 1. 探测远端 CPU 架构
+    let uname_output = manager.execute_dashboard_command("uname -m")
+        .map_err(|e| format!("探测系统架构失败: {}", e))?;
+    let arch_raw = uname_output.output.trim().to_lowercase();
+
+    let binary_bytes: &'static [u8] = if arch_raw.contains("x86_64") || arch_raw.contains("amd64") {
+        crate::embedded_binaries::BUSYBOX_X86_64
+    } else if arch_raw.contains("aarch64") || arch_raw.contains("arm64") {
+        crate::embedded_binaries::BUSYBOX_AARCH64
+    } else {
+        return Err(format!("当前远端架构 ({}) 暂无内置纯静态 Busybox，请手动上传对应二进制包", arch_raw));
+    };
+
+    // 2. 候选路径尝试（优先内存盘 /dev/shm 不伤磁盘且容器友好，次选 /tmp，最后尝试 /var/tmp）
+    let candidate_paths = [
+        "/dev/shm/.busybox",
+        "/tmp/.busybox",
+        "/var/tmp/.busybox",
+    ];
+
+    let mut last_error = String::new();
+
+    for remote_path in &candidate_paths {
+        // 尝试写入文件
+        if let Err(e) = manager.write_sftp_file(remote_path, binary_bytes) {
+            last_error = format!("写入 {} 失败: {}", remote_path, e);
+            continue;
+        }
+
+        // 添加执行权限并验证可用性（chmod 755 并运行 true 及 --help 校验是否受 noexec 限制或损坏）
+        let verify_cmd = format!(
+            "chmod 755 {} 2>/dev/null && {} true 2>&1 && {} --help 2>&1 | head -1 && echo 'VERIFY_OK'",
+            remote_path, remote_path, remote_path
+        );
+
+        match manager.execute_dashboard_command(&verify_cmd) {
+            Ok(output) => {
+                if output.output.contains("VERIFY_OK") {
+                    manager.set_busybox_path(Some(remote_path.to_string()));
+                    return Ok(remote_path.to_string());
+                } else if output.output.contains("Permission denied") {
+                    last_error = format!("{} 所在目录挂载了 noexec，禁止执行二进制", remote_path);
+                    continue;
+                } else {
+                    last_error = format!("验证 {} 失败: {}", remote_path, output.output.trim());
+                    continue;
+                }
+            }
+            Err(e) => {
+                last_error = format!("执行验证 {} 失败: {}", remote_path, e);
+                continue;
+            }
+        }
+    }
+
+    Err(format!(
+        "自动部署 Busybox 失败（已尝试 /dev/shm, /tmp, /var/tmp，可能因容器只读或 noexec 挂载限制）: {}",
+        last_error
+    ))
 }
 
 /// 从本地上传 busybox 静态二进制到远端 /tmp/busybox

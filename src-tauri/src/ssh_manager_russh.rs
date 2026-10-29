@@ -203,7 +203,7 @@ fn build_compat_command(command: &str) -> String {
 }
 
 /// 过滤非交互式 Shell 环境中缺失系统命令探测所产生的瞬态噪音，
-/// 如 `bash: line 1: systemctl: command not found` 或 `bash: line 1: awk: command not found`。
+/// 如 `bash: line 1: systemctl: command not found`、`bash: line 1: awk: command not found` 或 `bash: line 1: ip: command not found`。
 fn clean_shell_noise(stderr: &str) -> String {
     if stderr.is_empty() {
         return String::new();
@@ -215,7 +215,11 @@ fn clean_shell_noise(stderr: &str) -> String {
             continue;
         }
         let is_not_found = trimmed.contains("command not found") || trimmed.ends_with(": not found");
-        let is_target_tool = trimmed.contains("systemctl") || trimmed.contains("awk") || trimmed.contains("service");
+        let is_target_tool = trimmed.contains("systemctl")
+            || trimmed.contains("awk")
+            || trimmed.contains("service")
+            || trimmed.contains("ip")
+            || trimmed.contains("ifconfig");
         if is_not_found && is_target_tool {
             continue;
         }
@@ -1831,6 +1835,10 @@ impl SSHManagerRussh {
     
     fn set_current_session(&self, session_id: Option<String>) {
         if let Ok(mut guard) = self.current_session.lock() {
+            if *guard != session_id {
+                // 会话切换或断开时，重置 busybox 路径，防止跨会话状态污染导致新连接判定失效
+                self.set_busybox_path(None);
+            }
             *guard = session_id;
         }
     }

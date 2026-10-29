@@ -32,6 +32,7 @@ pub mod detection_commands;  // 检测命令处理器（从 lib.rs 拆分）
 pub mod device_info;
 pub mod docker_manager;
 pub mod docker_commands;     // Docker 命令处理器（从 lib.rs 拆分）
+pub mod embedded_binaries;
 pub mod file_analysis;
 pub mod log_analysis;
 pub mod packet_capture;
@@ -144,6 +145,7 @@ pub fn run() {
             commands::ssh_commands::ssh_get_connection_status,
             commands::ssh_commands::busybox_detect,
             commands::ssh_commands::busybox_install,
+            commands::ssh_commands::busybox_auto_deploy,
             commands::ssh_commands::busybox_enable,
             commands::ssh_commands::busybox_disable,
             commands::ssh_commands::busybox_status,

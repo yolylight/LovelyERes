@@ -177,6 +177,10 @@ export class SSHSessionManager {
         }
 
         this.connectionStatus = null;
+        try {
+          const { busyboxManager } = await import('../core/busyboxManager');
+          busyboxManager.reset();
+        } catch { /* ignore */ }
         this.notifyListeners();
       }
     } catch (error) {

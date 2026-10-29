@@ -11,35 +11,9 @@ function getApp(): any { return (window as any).app; }
 
 // ──── Busybox 模式选择 ────
 
-async function promptBusyboxMode(): Promise<void> {
-  const { status } = await busyboxManager.detect();
-  if (status === 'enabled') return;
-
-  const useBusybox = await showConfirm({
-    title: '选择命令执行模式',
-    message: status === 'installed'
-      ? `检测到远端已有 busybox (${busyboxManager.getPath()})。\n\n启用 Busybox 可信模式？`
-      : '是否启用 Busybox 可信命令执行模式？\n\n启用后需要选择本地 busybox 文件上传。',
-    confirmText: status === 'installed' ? '启用 Busybox' : '上传并启用',
-    cancelText: '使用默认模式',
-  });
-  if (!useBusybox) return;
-
-  try {
-    if (status === 'installed') {
-      await busyboxManager.enable();
-      window.showNotification?.('Busybox 可信模式已启用', 'success');
-    } else {
-      window.showNotification?.('请选择本地 busybox 文件...', 'info');
-      await busyboxManager.uploadFromLocal();
-      await busyboxManager.enable();
-      window.showNotification?.('Busybox 上传并启用成功', 'success');
-    }
-  } catch (e: any) {
-    if (!e?.message?.includes('未选择文件')) {
-      window.showNotification?.(`Busybox 部署失败: ${e}`, 'warning');
-    }
-  }
+async function promptBusyboxMode(serverKey?: string): Promise<void> {
+  const key = serverKey || 'default_server';
+  await busyboxManager.promptFirstConnect(key);
 }
 
 // ──── 表单显示/隐藏 ────
@@ -184,7 +158,7 @@ async function connectServer(serverId: string): Promise<void> {
     }
 
     window.showNotification?.(`已连接到 ${connection.name}`, 'success');
-    promptBusyboxMode();
+    promptBusyboxMode(`${username}@${connection.host}:${connection.port}`);
   } catch (error) {
     if (card) card.classList.remove('connecting');
     let msg = '连接失败';
@@ -217,6 +191,7 @@ async function disconnectServer(serverId: string): Promise<void> {
     else await (window as any).__TAURI__?.core?.invoke('ssh_disconnect_direct').catch(() => {});
 
     if (app?.getStateManager) app.getStateManager().setConnected(false);
+    busyboxManager.reset();
     window.showNotification?.('已断开连接', 'success');
   } catch (e) {
     window.showNotification?.(`断开失败: ${e}`, 'error');
@@ -372,7 +347,7 @@ async function scQuickConnect(): Promise<void> {
     (window as any).switchPage?.('system-info');
     setTimeout(() => (window as any).loadSystemDetailedInfo?.(true), 200);
     window.showNotification?.(`已连接到 ${host}`, 'success');
-    promptBusyboxMode();
+    promptBusyboxMode(`${username}@${host}:${port}`);
   } catch (e) {
     window.showNotification?.(`连接失败: ${e}`, 'error');
   } finally {
@@ -564,7 +539,7 @@ async function scConnectForm(): Promise<void> {
     (window as any).switchPage?.('system-info');
     setTimeout(() => (window as any).loadSystemDetailedInfo?.(true), 200);
     window.showNotification?.(`已连接到 ${host}`, 'success');
-    promptBusyboxMode();
+    promptBusyboxMode(`${username}@${host}:${port}`);
   } catch (e) {
     window.showNotification?.(`连接失败: ${e}`, 'error');
   } finally {

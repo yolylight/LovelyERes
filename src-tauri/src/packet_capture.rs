@@ -192,8 +192,148 @@ pub fn generate_tcpdump_command(interface: &str, filter: Option<&str>, count: Op
 }
 
 /// 生成获取网络接口的命令
+/// 跨环境多层降级，所有 stderr 强制重定向至 /dev/null 防止 command not found 警告污染解析输出：
+/// 1. 优先尝试 ip 命令提取接口与 IPv4（现代主流环境）
+/// 2. 次选尝试 ifconfig 命令提取接口与 IPv4（传统/精简环境）
+/// 3. 再次读取 /sys/class/net 目录列出所有可用接口（无第三方工具的容器环境）
+/// 4. 兜底读取 /proc/net/dev 列出所有接口（几乎所有 Linux 内核均支持）
 pub fn generate_list_interfaces_command() -> String {
-    "ip -o -4 addr show | awk '{print $2, $4}'".to_string()
+    concat!(
+        "if command -v ip >/dev/null 2>&1; then ",
+            "ip -o -4 addr show 2>/dev/null | awk '{print $2, $4}'; ",
+        "elif command -v ifconfig >/dev/null 2>&1; then ",
+            "ifconfig 2>/dev/null | awk '/^[a-zA-Z0-9]/ {iface=$1; sub(/:$/, \"\", iface)} /inet (addr:)?/ {for(i=1;i<=NF;i++) if($i~/^(addr:)?([0-9]+\\.){3}[0-9]+$/) {sub(/^addr:/,\"\",$i); print iface, $i; break}}'; ",
+        "elif [ -d /sys/class/net ]; then ",
+            "for d in /sys/class/net/*; do [ -e \"$d\" ] && basename \"$d\"; done 2>/dev/null; ",
+        "elif [ -f /proc/net/dev ]; then ",
+            "awk -F: 'NR>2 {gsub(/^[ \\t]+/, \"\", $1); print $1}' /proc/net/dev 2>/dev/null; ",
+        "fi"
+    ).to_string()
+}
+
+/// 校验网络接口名称合法性（排除 shell 错误输出特征词及异常字符）
+fn is_valid_interface_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 32 {
+        return false;
+    }
+    // 排除包含冒号结尾（如 `bash:`, `sh:`, `error:`）或常见 shell 报错词汇
+    if name.ends_with(':') {
+        return false;
+    }
+    let lower = name.to_lowercase();
+    if lower == "bash"
+        || lower == "sh"
+        || lower == "dash"
+        || lower == "zsh"
+        || lower == "line"
+        || lower == "command"
+        || lower == "not"
+        || lower == "found"
+        || lower == "sudo"
+        || lower == "error"
+        || lower == "warning"
+        || lower == "permission"
+        || lower == "denied"
+        || lower == "cannot"
+    {
+        return false;
+    }
+
+    // 合法网卡名：ASCII 字母数字、连字符、下划线、点、冒号（如子接口 eth0:1）
+    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == ':')
+}
+
+/// 校验 IP 地址合法性
+fn is_valid_ip_address(ip: &str) -> bool {
+    ip.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// 解析获取网络接口命令的文本输出
+pub fn parse_network_interfaces_output(output: &str) -> Vec<NetworkInterface> {
+    let mut interfaces: Vec<NetworkInterface> = Vec::new();
+    let mut index = 0u32;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // 防御性过滤 Shell 报错和杂音
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("bash:")
+            || lower.starts_with("sh:")
+            || lower.starts_with("dash:")
+            || lower.starts_with("zsh:")
+            || lower.contains("command not found")
+            || lower.contains("not found")
+            || lower.contains("permission denied")
+            || lower.contains("operation not permitted")
+            || lower.contains("syntax error")
+        {
+            continue;
+        }
+
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        let raw_name = parts[0].trim_end_matches(':');
+        if !is_valid_interface_name(raw_name) {
+            continue;
+        }
+
+        let name = raw_name.to_string();
+
+        // 提取 IP 地址（第二项，如果有且为合法 IP）
+        let valid_ip = if parts.len() >= 2 {
+            let candidate = parts[1].split('/').next().unwrap_or(parts[1]).trim();
+            if is_valid_ip_address(candidate) {
+                Some(candidate.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(existing) = interfaces.iter_mut().find(|i| i.name == name) {
+            if let Some(ip) = valid_ip {
+                if !existing.ips.contains(&ip) {
+                    existing.ips.push(ip);
+                }
+            }
+        } else {
+            index += 1;
+            let ips = match valid_ip {
+                Some(ip) => vec![ip],
+                None => Vec::new(),
+            };
+            interfaces.push(NetworkInterface {
+                name,
+                index,
+                mac: None,
+                ips,
+            });
+        }
+    }
+
+    // 始终提供 any 虚拟抓包接口（tcpdump -i any 支持捕获所有接口流量）
+    if !interfaces.iter().any(|i| i.name == "any") {
+        index += 1;
+        interfaces.insert(
+            0,
+            NetworkInterface {
+                name: "any".to_string(),
+                index,
+                mac: None,
+                ips: vec!["所有接口/全部流量".to_string()],
+            },
+        );
+    }
+
+    interfaces
 }
 
 #[cfg(test)]
@@ -232,5 +372,37 @@ mod tests {
         assert!(!cmd.contains("-nne"));
         assert!(cmd.contains("-nn"));
         assert!(cmd.contains("-tttt"));
+    }
+
+    #[test]
+    fn parses_interfaces_normal_ip_output() {
+        let sample = "lo 127.0.0.1/8\neth0 192.168.1.100/24\neth0 10.0.0.2/24\n";
+        let ifaces = parse_network_interfaces_output(sample);
+        assert!(ifaces.iter().any(|i| i.name == "any"));
+        let eth0 = ifaces.iter().find(|i| i.name == "eth0").expect("eth0 must exist");
+        assert_eq!(eth0.ips, vec!["192.168.1.100", "10.0.0.2"]);
+    }
+
+    #[test]
+    fn parses_interfaces_filters_bash_error() {
+        // 模拟缺失 ip 命令时返回的典型错误
+        let sample = "bash: line 1: ip: command not found\nbash: (ip:)\nsh: ip: not found\n";
+        let ifaces = parse_network_interfaces_output(sample);
+        // 绝对不能解析出 "bash:" 或 "sh:" 网卡
+        assert!(!ifaces.iter().any(|i| i.name.starts_with("bash") || i.name.starts_with("sh")));
+        // 兜底包含 any
+        assert_eq!(ifaces.len(), 1);
+        assert_eq!(ifaces[0].name, "any");
+    }
+
+    #[test]
+    fn parses_interfaces_names_only() {
+        // 模拟从 /sys/class/net 仅读取到接口名的输出
+        let sample = "eth0\nlo\ndocker0\n";
+        let ifaces = parse_network_interfaces_output(sample);
+        assert!(ifaces.iter().any(|i| i.name == "eth0"));
+        assert!(ifaces.iter().any(|i| i.name == "docker0"));
+        let eth0 = ifaces.iter().find(|i| i.name == "eth0").unwrap();
+        assert!(eth0.ips.is_empty());
     }
 }
