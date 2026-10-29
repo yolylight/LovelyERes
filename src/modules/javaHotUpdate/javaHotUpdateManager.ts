@@ -784,7 +784,7 @@ nohup java -jar ${this.escapeHtml(jarPath)} &</code></div>
 
     // 检测 systemd 中的 Java 服务
     const systemdOutput = await this.execSSH(
-      `systemctl list-units --type=service --all 2>/dev/null | grep -iE 'java|tomcat|spring|jenkins|elasticsearch|kafka|zookeeper|nexus|sonar|maven|gradle|wildfly|jboss|jetty|flink|hadoop|hbase|spark' | awk '{print $1, $3, $4}' | head -20`
+      `if command -v systemctl >/dev/null 2>&1; then systemctl list-units --type=service --all 2>/dev/null | grep -iE 'java|tomcat|spring|jenkins|elasticsearch|kafka|zookeeper|nexus|sonar|maven|gradle|wildfly|jboss|jetty|flink|hadoop|hbase|spark' | awk '{print $1, $3, $4}' 2>/dev/null | head -20; fi`
     );
     systemdOutput.split('\n').filter(Boolean).forEach(line => {
       const parts = line.split(/\s+/);

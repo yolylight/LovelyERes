@@ -158,7 +158,7 @@ export class PackageContextMenu extends BaseContextMenu {
         actionName: '检查配置文件'
       },
       'check-services': {
-        command: `systemctl list-units --all --no-pager | grep -i "${name}" || echo '未找到相关服务'`,
+        command: `if command -v systemctl >/dev/null 2>&1; then systemctl list-units --all --no-pager 2>/dev/null | grep -i "${name}" || echo '未找到相关服务'; elif command -v service >/dev/null 2>&1; then service --status-all 2>&1 | grep -i "${name}" || echo '未找到相关服务'; else echo '未找到相关服务'; fi`,
         title: `相关服务 - ${name}`,
         actionName: '查看相关服务'
       },

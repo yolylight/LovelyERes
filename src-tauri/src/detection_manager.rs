@@ -935,7 +935,7 @@ pub fn detect_unnecessary_services(manager: &SSHManagerRussh) -> Result<GenericD
     // 定义常见的不必要服务
     let unnecessary_services = vec!["telnet", "ftp", "rsh", "rlogin", "vsftpd", "tftp"];
 
-    let cmd = "systemctl list-units --type=service --state=running --no-pager 2>/dev/null | awk '{print $1}' || service --status-all 2>/dev/null";
+    let cmd = r#"if command -v systemctl >/dev/null 2>&1; then systemctl list-units --type=service --state=running --no-pager 2>/dev/null | awk '{print $1}' 2>/dev/null; elif command -v service >/dev/null 2>&1; then service --status-all 2>/dev/null | awk '{print $NF}' 2>/dev/null; else ls -1 /etc/init.d 2>/dev/null; fi"#;
     let result = manager.execute_command(cmd)?;
     let running_services = result.output.to_lowercase();
 

@@ -129,47 +129,47 @@ export class TimerContextMenu extends BaseContextMenu {
 
     const actions: Record<string, MenuAction> = {
       'timer-status': {
-        command: `systemctl status ${timer} --no-pager || true`,
+        command: `if command -v systemctl >/dev/null 2>&1; then systemctl status ${timer} --no-pager 2>&1 || true; else echo "当前系统非 systemd 环境"; fi`,
         title: `定时器状态 - ${timer}`,
         actionName: '查看定时器状态'
       },
       'timer-config': {
-        command: `systemctl cat ${timer} --no-pager`,
+        command: `if command -v systemctl >/dev/null 2>&1; then systemctl cat ${timer} --no-pager 2>&1; else echo "当前系统非 systemd 环境"; fi`,
         title: `定时器配置 - ${timer}`,
         actionName: '查看定时器配置'
       },
       'unit-status': {
-        command: `systemctl status ${activates} --no-pager || true`,
+        command: `if command -v systemctl >/dev/null 2>&1; then systemctl status ${activates} --no-pager 2>&1 || true; else echo "当前系统非 systemd 环境"; fi`,
         title: `单元状态 - ${activates}`,
         actionName: '查看触发单元状态'
       },
       'unit-config': {
-        command: `systemctl cat ${activates} --no-pager`,
+        command: `if command -v systemctl >/dev/null 2>&1; then systemctl cat ${activates} --no-pager 2>&1; else echo "当前系统非 systemd 环境"; fi`,
         title: `单元配置 - ${activates}`,
         actionName: '查看触发单元配置'
       },
       'timer-logs': {
-        command: `journalctl -u ${timer} --no-pager -n 50`,
+        command: `if command -v journalctl >/dev/null 2>&1; then journalctl -u ${timer} --no-pager -n 50 2>&1; else echo "当前系统未安装 journalctl"; fi`,
         title: `日志 - ${timer}`,
         actionName: '查看定时器日志'
       },
       'unit-logs': {
-        command: `journalctl -u ${activates} --no-pager -n 50`,
+        command: `if command -v journalctl >/dev/null 2>&1; then journalctl -u ${activates} --no-pager -n 50 2>&1; else echo "当前系统未安装 journalctl"; fi`,
         title: `日志 - ${activates}`,
         actionName: '查看触发单元日志'
       },
       'stop-timer': {
-        command: `systemctl stop ${timer} && echo '✓ 定时器已停止' && (systemctl status ${timer} --no-pager || true)`,
+        command: `if command -v systemctl >/dev/null 2>&1; then systemctl stop ${timer} && echo '✓ 定时器已停止' && (systemctl status ${timer} --no-pager || true); else echo "当前系统非 systemd 环境，无法操作定时器"; fi`,
         title: `停止 - ${timer}`,
         actionName: '停止定时器'
       },
       'disable-timer': {
-        command: `systemctl disable ${timer} && echo '✓ 定时器已禁用' && (systemctl status ${timer} --no-pager || true)`,
+        command: `if command -v systemctl >/dev/null 2>&1; then systemctl disable ${timer} && echo '✓ 定时器已禁用' && (systemctl status ${timer} --no-pager || true); else echo "当前系统非 systemd 环境，无法操作定时器"; fi`,
         title: `禁用 - ${timer}`,
         actionName: '禁用定时器'
       },
       'mask-timer': {
-        command: `systemctl mask ${timer} && echo '✓ 定时器已屏蔽' && (systemctl status ${timer} --no-pager || true)`,
+        command: `if command -v systemctl >/dev/null 2>&1; then systemctl mask ${timer} && echo '✓ 定时器已屏蔽' && (systemctl status ${timer} --no-pager || true); else echo "当前系统非 systemd 环境，无法操作定时器"; fi`,
         title: `屏蔽 - ${timer}`,
         actionName: '屏蔽定时器'
       }

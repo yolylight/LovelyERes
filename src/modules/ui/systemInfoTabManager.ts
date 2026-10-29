@@ -558,7 +558,7 @@ async function fetchExtraTabData(tabId: string): Promise<any[]> {
 
   if (tabId === 'autoruns') {
     // 启动项汇总: systemd enabled + cron + rc.local + init.d + bashrc
-    const out = await exec(`echo "=SYSTEMD=" && systemctl list-unit-files --type=service --state=enabled --no-pager 2>/dev/null | grep enabled | head -20 && echo "=CRON=" && for u in $(cut -d: -f1 /etc/passwd | head -20); do c=$(crontab -l -u $u 2>/dev/null | grep -v '^#' | grep -v '^$'); [ -n "$c" ] && echo "$u: $c"; done | head -15 && echo "=RCLOCAL=" && cat /etc/rc.local 2>/dev/null | grep -v '^#' | grep -v '^$' | head -5 && echo "=INITD=" && ls /etc/init.d/ 2>/dev/null | head -10`);
+    const out = await exec(`echo "=SYSTEMD="; { command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files --type=service --state=enabled --no-pager 2>/dev/null | grep enabled | head -20 || true; }; echo "=CRON="; for u in $(cut -d: -f1 /etc/passwd | head -20); do c=$(crontab -l -u $u 2>/dev/null | grep -v '^#' | grep -v '^$'); [ -n "$c" ] && echo "$u: $c"; done | head -15; echo "=RCLOCAL="; cat /etc/rc.local 2>/dev/null | grep -v '^#' | grep -v '^$' | head -5; echo "=INITD="; ls /etc/init.d/ 2>/dev/null | head -10; true`);
     const items: any[] = [];
     let currentType = '';
     out.split('\n').filter(Boolean).forEach((line: string) => {

@@ -275,21 +275,21 @@ export class StartupContextMenu extends BaseContextMenu {
       },
       'enable': {
         command: type === 'systemd'
-          ? `systemctl enable ${name} 2>&1 && echo "✓ 已启用自启动" || echo "✗ 启用失败"`
+          ? `if command -v systemctl >/dev/null 2>&1; then systemctl enable ${name} 2>&1 && echo "✓ 已启用自启动" || echo "✗ 启用失败"; else echo "当前系统未安装 systemctl"; fi`
           : `echo "启动类型: ${type}"; echo ""; echo "⚠️ 该类型的启动项需要手动配置"`,
         title: `启用自启动 - ${name}`,
         actionName: '启用自启动'
       },
       'disable': {
         command: type === 'systemd'
-          ? `systemctl disable ${name} 2>&1 && echo "✓ 已禁用自启动" || echo "✗ 禁用失败"`
+          ? `if command -v systemctl >/dev/null 2>&1; then systemctl disable ${name} 2>&1 && echo "✓ 已禁用自启动" || echo "✗ 禁用失败"; else echo "当前系统未安装 systemctl"; fi`
           : `echo "启动类型: ${type}"; echo ""; echo "⚠️ 该类型的启动项需要手动配置"`,
         title: `禁用自启动 - ${name}`,
         actionName: '禁用自启动'
       },
       'run-now': {
         command: type === 'systemd'
-          ? `systemctl start ${name} 2>&1 || echo "启动失败"`
+          ? `if command -v systemctl >/dev/null 2>&1; then systemctl start ${name} 2>&1 || echo "启动失败"; else echo "当前系统未安装 systemctl"; fi`
           : `${command} 2>&1 &`,
         title: `立即运行 - ${name}`,
         actionName: '立即运行'

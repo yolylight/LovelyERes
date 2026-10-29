@@ -142,6 +142,88 @@ fn shell_quote(value: &str) -> String {
 ///   避免因凭据缓存跳过读取而导致 stdin 上的密码串错位进入命令输入。
 /// - `with_stdin_password = false`：使用 `sudo -n`（非交互，依赖 NOPASSWD 配置）。
 ///
+/// 构造跨环境安全执行的命令：
+/// 1. 注入完整标准 PATH，解决非交互式 SSH 会话因未加载 profile 导致 PATH 缺失（如 /usr/sbin, /sbin 丢失）的问题；
+/// 2. 注入 LANG=C LC_ALL=C 保证输出编码与提示信息确定性；
+/// 3. 当系统未安装独立 awk 时，自动利用 busybox awk 兜底；
+/// 4. 当系统未安装 systemctl（如 Docker 容器、Alpine、SysVinit 等）时，
+///    提供轻量 shell 函数 shim 代理常见子命令（is-active, list-units, status 等），
+///    彻底避免 `bash: line 1: systemctl: command not found`。
+fn build_compat_command(command: &str) -> String {
+    // 幂等性校验：如果命令已经包含注入标识，则无需二次注入
+    if command.contains("export PATH=\"/usr/local/sbin") {
+        return command.to_string();
+    }
+
+    const COMPAT_PRELUDE: &str = concat!(
+        "export PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH\"; ",
+        "export LANG=C LC_ALL=C; ",
+        // awk shim: 若无 awk 但有 busybox，则以 busybox awk 代理
+        "if ! command -v awk >/dev/null 2>&1; then ",
+            "if command -v busybox >/dev/null 2>&1; then ",
+                "awk() { busybox awk \"$@\"; }; ",
+            "elif [ -x /bin/busybox ]; then ",
+                "awk() { /bin/busybox awk \"$@\"; }; ",
+            "elif [ -x /usr/bin/busybox ]; then ",
+                "awk() { /usr/bin/busybox awk \"$@\"; }; ",
+            "fi; ",
+        "fi; ",
+        // systemctl shim: 若无 systemctl（容器/非systemd系统），提供轻量安全代理
+        "if ! command -v systemctl >/dev/null 2>&1; then ",
+            "systemctl() { ",
+                "case \"$1\" in ",
+                    "is-active) ",
+                        "shift; ",
+                        "for _s in \"$@\"; do ",
+                            "if command -v service >/dev/null 2>&1 && service \"$_s\" status >/dev/null 2>&1; then echo \"active\"; return 0; fi; ",
+                            "if command -v rc-service >/dev/null 2>&1 && rc-service \"$_s\" status >/dev/null 2>&1; then echo \"active\"; return 0; fi; ",
+                            "if pgrep -f \"$_s\" >/dev/null 2>&1; then echo \"active\"; return 0; fi; ",
+                        "done; ",
+                        "echo \"inactive\"; return 1;; ",
+                    "list-units|list-unit-files|list-timers) ",
+                        "return 0;; ",
+                    "status) ",
+                        "if command -v service >/dev/null 2>&1; then service \"$2\" status 2>/dev/null; ",
+                        "elif command -v rc-service >/dev/null 2>&1; then rc-service \"$2\" status 2>/dev/null; ",
+                        "else return 1; fi;; ",
+                    "start|stop|restart|reload) ",
+                        "if command -v service >/dev/null 2>&1; then service \"$2\" \"$1\" 2>&1; ",
+                        "elif command -v rc-service >/dev/null 2>&1; then rc-service \"$2\" \"$1\" 2>&1; ",
+                        "else return 1; fi;; ",
+                    "show) return 0;; ",
+                    "cat) ",
+                        "[ -f \"/etc/init.d/$2\" ] && cat \"/etc/init.d/$2\" 2>/dev/null || return 1;; ",
+                    "*) return 1;; ",
+                "esac; ",
+            "}; ",
+        "fi; "
+    );
+
+    format!("{}{}", COMPAT_PRELUDE, command)
+}
+
+/// 过滤非交互式 Shell 环境中缺失系统命令探测所产生的瞬态噪音，
+/// 如 `bash: line 1: systemctl: command not found` 或 `bash: line 1: awk: command not found`。
+fn clean_shell_noise(stderr: &str) -> String {
+    if stderr.is_empty() {
+        return String::new();
+    }
+    let mut kept = Vec::new();
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let is_not_found = trimmed.contains("command not found") || trimmed.ends_with(": not found");
+        let is_target_tool = trimmed.contains("systemctl") || trimmed.contains("awk") || trimmed.contains("service");
+        if is_not_found && is_target_tool {
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
+}
+
 /// 命令统一用 `LANG=C LC_ALL=C` 包裹，令任何残留的 sudo 提示/错误信息为可预测的
 /// 英文，从而使错误检测与输出清洗与系统语言环境无关。
 fn build_sudo_command(inner_command: &str, with_stdin_password: bool) -> String {
@@ -150,15 +232,13 @@ fn build_sudo_command(inner_command: &str, with_stdin_password: bool) -> String 
     } else {
         "sudo -n"
     };
+    let compat_cmd = build_compat_command(inner_command);
     // sudo 默认会重置 PATH（secure_path），导致安装在 /usr/local/bin 等非标准
-    // 位置的可执行文件（如 docker、docker-compose）找不到，表现为
-    // `sh: docker: not found`。这里通过 `env "PATH=..."` 在 sudo 清理环境后
-    // 重新注入常见路径，覆盖 Docker Desktop / 手动安装（/usr/local/bin）与
-    // 包管理器安装（/usr/bin、/bin）等位置。保留 $PATH 以兼容自定义环境。
+    // 位置的可执行文件找不到。这里重新注入完整标准路径。
     format!(
-        "LANG=C LC_ALL=C {} env \"PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin\" sh -c {}",
+        "LANG=C LC_ALL=C {} env \"PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\" sh -c {}",
         sudo_prefix,
-        shell_quote(inner_command)
+        shell_quote(&compat_cmd)
     )
 }
 
@@ -609,9 +689,12 @@ async fn execute_command_async(
     // Open a session channel with retry
     let channel = open_channel_with_retry(handle).await?;
     
+    // 注入跨环境兼容支持（PATH、awk、systemctl shim 等）
+    let exec_cmd = build_compat_command(command);
+
     // Execute command
     channel
-        .exec(true, command)
+        .exec(true, exec_cmd.as_str())
         .await
         .map_err(|e| format!("Failed to execute command: {}", e))?;
     
@@ -642,13 +725,17 @@ async fn execute_command_async(
         }
     }
 
-    // Combine stdout and stderr, with stderr appended if not empty
-    let mut output = String::from_utf8_lossy(&stdout).to_string();
-    if !stderr.is_empty() {
+    // Combine stdout and stderr, with filtered stderr appended if not empty
+    let stdout_str = String::from_utf8_lossy(&stdout).to_string();
+    let stderr_str = String::from_utf8_lossy(&stderr).to_string();
+    let clean_err = clean_shell_noise(&stderr_str);
+
+    let mut output = stdout_str;
+    if !clean_err.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {
             output.push('\n');
         }
-        output.push_str(&String::from_utf8_lossy(&stderr));
+        output.push_str(&clean_err);
     }
 
     Ok(TerminalOutput::new(command, &output, exit_code))
@@ -720,11 +807,12 @@ async fn execute_sudo_command_async(
         return Err(err);
     }
 
-    // 清洗残留的 sudo 提示行：stdout 和 stderr 都要处理，避免本地化提示
-    // （如 `[sudo] user 的密码：`）污染 JSON 等结构化输出的逐行解析。
+    // 清洗残留的 sudo 提示行与 shell noise：stdout 和 stderr 都要处理，避免本地化提示
+    // （如 `[sudo] user 的密码：`）或 command not found 污染结构化输出的逐行解析。
     let stdout_str = String::from_utf8_lossy(&stdout).to_string();
     let mut output = strip_sudo_prompt(&stdout_str);
-    let clean_stderr = strip_sudo_prompt(&stderr_str);
+    let filtered_stderr = clean_shell_noise(&stderr_str);
+    let clean_stderr = strip_sudo_prompt(&filtered_stderr);
 
     if !clean_stderr.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {

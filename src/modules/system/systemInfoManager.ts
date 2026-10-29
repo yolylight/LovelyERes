@@ -595,17 +595,35 @@ export class SystemInfoManager {
       },
       {
         key: 'services',
-        fetch: () => this.executeCommand('systemctl list-units --type=service --no-pager --no-legend | awk \'BEGIN{OFS=","} {print $1,$3,$4,$5" "$6" "$7" "$8" "$9}\''),
+        fetch: () => this.executeCommand(
+          `if command -v systemctl >/dev/null 2>&1; then ` +
+          `systemctl list-units --type=service --no-pager --no-legend 2>/dev/null | awk 'BEGIN{OFS=","} {print $1,$3,$4,$5" "$6" "$7" "$8" "$9}' 2>/dev/null; ` +
+          `elif command -v service >/dev/null 2>&1; then ` +
+          `service --status-all 2>&1 | awk 'BEGIN{OFS=","} {st=($2=="+"?"running":($2=="-"?"stopped":"unknown")); print $NF,st,"active","sysvinit"}' 2>/dev/null; ` +
+          `elif command -v rc-service >/dev/null 2>&1; then ` +
+          `rc-service -s 2>/dev/null | awk 'BEGIN{OFS=","} {print $1,"running","active","openrc"}' 2>/dev/null; ` +
+          `elif [ -d /etc/init.d ]; then ` +
+          `for f in /etc/init.d/*; do [ -x "$f" ] && [ -f "$f" ] && echo "$(basename "$f"),unknown,unknown,init.d"; done; ` +
+          `fi`
+        ),
         parse: (d) => this.parseServices(d)
       },
       {
         key: 'users',
-        fetch: () => this.executeCommand('getent passwd | awk -F: \'BEGIN{OFS=","} {print $1,$3,$4,$6,$7}\''),
+        fetch: () => this.executeCommand('{ getent passwd 2>/dev/null || cat /etc/passwd 2>/dev/null; } | awk -F: \'BEGIN{OFS=","} {print $1,$3,$4,$6,$7}\' 2>/dev/null'),
         parse: (d) => this.parseUsers(d)
       },
       {
         key: 'autostart',
-        fetch: () => this.executeCommand('systemctl list-unit-files --type=service --state=enabled --no-pager --no-legend | awk \'BEGIN{OFS=","} {print $1,$2,"enabled","systemd"}\''),
+        fetch: () => this.executeCommand(
+          `if command -v systemctl >/dev/null 2>&1; then ` +
+          `systemctl list-unit-files --type=service --state=enabled --no-pager --no-legend 2>/dev/null | awk 'BEGIN{OFS=","} {print $1,$2,"enabled","systemd"}' 2>/dev/null; ` +
+          `elif [ -d /etc/rc.d ] || [ -d /etc/init.d ]; then ` +
+          `find /etc/rc*.d/ -name "S*" 2>/dev/null | awk -F/ 'BEGIN{OFS=","} {name=$NF; sub(/^S[0-9]+/,"",name); print name,"enabled","enabled","sysvinit"}' 2>/dev/null | sort -u; ` +
+          `elif [ -d /etc/runlevels ]; then ` +
+          `for s in /etc/runlevels/default/*; do [ -e "$s" ] && echo "$(basename "$s"),enabled,enabled,openrc"; done; ` +
+          `fi`
+        ),
         parse: (d) => this.parseAutostart(d)
       },
       { key: 'cronJobs', fetch: () => this.getCronJobs(), parse: (d) => this.parseCronJobs(d) },
@@ -819,7 +837,17 @@ export class SystemInfoManager {
    */
   async getServiceStatus(serviceName: string): Promise<{ status: string; active: boolean }> {
     try {
-      const result = await this.executeCommand(`systemctl is-active ${serviceName}`);
+      const result = await this.executeCommand(
+        `if command -v systemctl >/dev/null 2>&1; then ` +
+        `systemctl is-active ${serviceName} 2>/dev/null; ` +
+        `elif command -v service >/dev/null 2>&1; then ` +
+        `service ${serviceName} status >/dev/null 2>&1 && echo "active" || echo "inactive"; ` +
+        `elif command -v rc-service >/dev/null 2>&1; then ` +
+        `rc-service ${serviceName} status >/dev/null 2>&1 && echo "active" || echo "inactive"; ` +
+        `elif pgrep -f ${serviceName} >/dev/null 2>&1; then ` +
+        `echo "active"; ` +
+        `else echo "inactive"; fi`
+      );
       const status = result.trim();
       return {
         status,
@@ -986,14 +1014,26 @@ export class SystemInfoManager {
     if (!data.trim()) return [];
 
     return data.trim().split('\n').map(line => {
-      const parts = line.split(',');
+      const trimmed = line.trim();
+      if (!trimmed) return null;
+      // 过滤任何 shell 错误输出噪音
+      if (
+        trimmed.startsWith('bash:') ||
+        trimmed.startsWith('sh:') ||
+        trimmed.includes('command not found') ||
+        trimmed.includes(': not found') ||
+        trimmed.includes('No such file')
+      ) {
+        return null;
+      }
+      const parts = trimmed.split(',');
       return {
         name: parts[0] || '',
         status: parts[1] || '',
         enabled: parts[2] || '',
         description: parts[3] || ''
       };
-    }).filter(s => s.name);
+    }).filter((s): s is { name: string; status: string; enabled: string; description: string } => Boolean(s && s.name));
   }
 
   /**
@@ -1003,7 +1043,17 @@ export class SystemInfoManager {
     if (!data.trim()) return [];
 
     return data.trim().split('\n').map(line => {
-      const parts = line.split(',');
+      const trimmed = line.trim();
+      if (!trimmed) return null;
+      if (
+        trimmed.startsWith('bash:') ||
+        trimmed.startsWith('sh:') ||
+        trimmed.includes('command not found') ||
+        trimmed.includes(': not found')
+      ) {
+        return null;
+      }
+      const parts = trimmed.split(',');
       return {
         username: parts[0] || '',
         uid: parts[1] || '',
@@ -1011,7 +1061,7 @@ export class SystemInfoManager {
         home: parts[3] || '',
         shell: parts[4] || ''
       };
-    }).filter(u => u.username);
+    }).filter((u): u is { username: string; uid: string; gid: string; home: string; shell: string } => Boolean(u && u.username));
   }
 
   /**
@@ -1021,14 +1071,24 @@ export class SystemInfoManager {
     if (!data.trim()) return [];
 
     return data.trim().split('\n').map(line => {
-      const parts = line.split(',');
+      const trimmed = line.trim();
+      if (!trimmed) return null;
+      if (
+        trimmed.startsWith('bash:') ||
+        trimmed.startsWith('sh:') ||
+        trimmed.includes('command not found') ||
+        trimmed.includes(': not found')
+      ) {
+        return null;
+      }
+      const parts = trimmed.split(',');
       return {
         name: parts[0] || '',
         command: parts[0] || '',
         status: parts[1] || '',
         type: parts[3] || 'systemd'
       };
-    }).filter(a => a.name);
+    }).filter((a): a is { name: string; command: string; status: string; type: string } => Boolean(a && a.name));
   }
 
   /**
@@ -1304,7 +1364,7 @@ export class SystemInfoManager {
   /** 采集 systemd timers */
   private async getSystemdTimers(): Promise<string> {
     return this.executeCommand(
-      `systemctl list-timers --all --no-pager --no-legend 2>/dev/null | head -100`
+      `if command -v systemctl >/dev/null 2>&1; then systemctl list-timers --all --no-pager --no-legend 2>/dev/null | head -100; else echo ""; fi`
     );
   }
 
